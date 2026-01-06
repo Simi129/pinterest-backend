@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+celery
+redis
+supabase
+pillow
+requests
+python-dotenv
+gunicorn
