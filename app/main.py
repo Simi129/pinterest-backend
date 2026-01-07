@@ -12,7 +12,8 @@ from app.pinterest import get_pinterest_client
 from app.database import (
     create_post, update_post_status, get_post,
     create_pinterest_connection, get_pinterest_connection,
-    delete_pinterest_connection
+    delete_pinterest_connection,
+    save_oauth_state, get_oauth_state, cleanup_old_oauth_states
 )
 from app.oauth import get_authorization_url, exchange_code_for_token
 
@@ -30,21 +31,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Временное хранилище для state (в продакшене используй Redis или БД)
-oauth_states = {}
-
 # Функция публикации
 async def publish_post(post_id: str, user_id: str):
     """Публикация поста в Pinterest"""
     try:
-        # Получаем пост из БД
         post = get_post(post_id)
         
         if not post:
             print(f"Post {post_id} not found")
             return
         
-        # Получаем токен пользователя
         connection = get_pinterest_connection(user_id)
         
         if not connection:
@@ -52,7 +48,6 @@ async def publish_post(post_id: str, user_id: str):
             update_post_status(post_id, "failed")
             return
         
-        # Публикуем в Pinterest
         pinterest = get_pinterest_client(connection["access_token"])
         
         media_source = {
@@ -68,7 +63,6 @@ async def publish_post(post_id: str, user_id: str):
             link=post.get("link", "")
         )
         
-        # Обновляем статус
         update_post_status(post_id, "published", pin.get("id"))
         print(f"Post {post_id} published successfully. Pin ID: {pin.get('id')}")
         
@@ -76,7 +70,6 @@ async def publish_post(post_id: str, user_id: str):
         print(f"Error publishing post {post_id}: {e}")
         update_post_status(post_id, "failed")
 
-# Фоновая задача для отложенной публикации
 async def schedule_publish(post_id: str, user_id: str, scheduled_at: datetime):
     """Ждёт до нужного времени и публикует"""
     now = datetime.utcnow()
@@ -87,6 +80,11 @@ async def schedule_publish(post_id: str, user_id: str, scheduled_at: datetime):
         await asyncio.sleep(wait_seconds)
     
     await publish_post(post_id, user_id)
+
+@app.on_event("startup")
+async def startup_event():
+    """Очистка старых OAuth states при запуске"""
+    cleanup_old_oauth_states()
 
 @app.get("/")
 def read_root():
@@ -103,18 +101,19 @@ def pinterest_auth(request: Request, user_id: str = Query(...)):
     """
     Начало OAuth flow - редирект на Pinterest для авторизации
     """
-    # Генерируем случайный state для защиты от CSRF
+    # Очищаем старые states
+    cleanup_old_oauth_states()
+    
+    # Генерируем случайный state
     state = secrets.token_urlsafe(32)
     
-    # Сохраняем state с user_id (в продакшене используй Redis)
-    oauth_states[state] = {
-        "user_id": user_id,
-        "created_at": datetime.utcnow()
-    }
+    # Сохраняем state в БД
+    if not save_oauth_state(state, user_id):
+        raise HTTPException(status_code=500, detail="Failed to save OAuth state")
     
-    # Формируем redirect_uri из base URL
-    base_url = str(request.base_url).rstrip('/')
-    redirect_uri = f"{base_url}/auth/pinterest/callback"
+    # Формируем redirect_uri
+    backend_url = os.getenv('BACKEND_URL', str(request.base_url).rstrip('/'))
+    redirect_uri = f"{backend_url}/auth/pinterest/callback"
     
     # Генерируем URL авторизации
     auth_url = get_authorization_url(redirect_uri, state)
@@ -131,16 +130,15 @@ async def pinterest_callback(
     Callback после авторизации в Pinterest
     """
     try:
-        # Проверяем state
-        if state not in oauth_states:
-            raise HTTPException(status_code=400, detail="Invalid state parameter")
+        # Получаем user_id из БД
+        user_id = get_oauth_state(state)
         
-        state_data = oauth_states.pop(state)
-        user_id = state_data["user_id"]
+        if not user_id:
+            raise HTTPException(status_code=400, detail="Invalid or expired state parameter")
         
         # Обмениваем code на access token
-        base_url = str(request.base_url).rstrip('/')
-        redirect_uri = f"{base_url}/auth/pinterest/callback"
+        backend_url = os.getenv('BACKEND_URL', str(request.base_url).rstrip('/'))
+        redirect_uri = f"{backend_url}/auth/pinterest/callback"
         token_data = exchange_code_for_token(code, redirect_uri)
         
         # Получаем информацию о пользователе Pinterest
@@ -171,9 +169,7 @@ async def pinterest_callback(
 
 @app.delete("/auth/pinterest/disconnect")
 def disconnect_pinterest(user_id: str = Query(...)):
-    """
-    Отключить Pinterest аккаунт
-    """
+    """Отключить Pinterest аккаунт"""
     try:
         delete_pinterest_connection(user_id)
         return {"status": "success", "message": "Pinterest disconnected"}
@@ -182,9 +178,7 @@ def disconnect_pinterest(user_id: str = Query(...)):
 
 @app.get("/auth/pinterest/status")
 def pinterest_status(user_id: str = Query(...)):
-    """
-    Проверить статус подключения Pinterest
-    """
+    """Проверить статус подключения Pinterest"""
     connection = get_pinterest_connection(user_id)
     
     if not connection:
@@ -201,9 +195,7 @@ def pinterest_status(user_id: str = Query(...)):
 
 @app.get("/api/boards")
 def get_boards(user_id: str = Query(...)):
-    """
-    Получить список досок пользователя
-    """
+    """Получить список досок пользователя"""
     try:
         connection = get_pinterest_connection(user_id)
         
@@ -221,7 +213,6 @@ def get_boards(user_id: str = Query(...)):
 async def publish_now(request: PublishNowRequest, background_tasks: BackgroundTasks):
     """Немедленная публикация"""
     try:
-        # Проверяем подключение
         connection = get_pinterest_connection(request.user_id)
         if not connection:
             raise HTTPException(status_code=401, detail="Pinterest not connected")
@@ -237,7 +228,6 @@ async def publish_now(request: PublishNowRequest, background_tasks: BackgroundTa
         }
         post = create_post(post_data)
         
-        # Добавляем в фоновые задачи
         background_tasks.add_task(publish_post, post["id"], request.user_id)
         
         return {"status": "publishing", "post_id": post["id"]}
@@ -249,7 +239,6 @@ async def publish_now(request: PublishNowRequest, background_tasks: BackgroundTa
 async def schedule_post_endpoint(request: SchedulePostRequest, background_tasks: BackgroundTasks):
     """Запланированная публикация"""
     try:
-        # Проверяем подключение
         connection = get_pinterest_connection(request.user_id)
         if not connection:
             raise HTTPException(status_code=401, detail="Pinterest not connected")
@@ -266,7 +255,6 @@ async def schedule_post_endpoint(request: SchedulePostRequest, background_tasks:
         }
         post = create_post(post_data)
         
-        # Добавляем отложенную задачу
         background_tasks.add_task(schedule_publish, post["id"], request.user_id, request.scheduled_at)
         
         return {"status": "scheduled", "post_id": post["id"]}

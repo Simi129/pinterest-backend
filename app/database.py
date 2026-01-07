@@ -2,13 +2,71 @@
 from supabase import create_client, Client
 import os
 from typing import Optional, Dict, List
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Инициализация Supabase
 supabase: Client = create_client(
     os.getenv("SUPABASE_URL"),
     os.getenv("SUPABASE_KEY")
 )
+
+# ==================== OAuth States ====================
+
+def save_oauth_state(state: str, user_id: str) -> bool:
+    """
+    Сохранить OAuth state в БД
+    """
+    try:
+        supabase.table("oauth_states").insert({
+            "state": state,
+            "user_id": user_id
+        }).execute()
+        return True
+    except Exception as e:
+        print(f"Error saving OAuth state: {e}")
+        return False
+
+def get_oauth_state(state: str) -> Optional[str]:
+    """
+    Получить user_id по state и удалить использованный state
+    """
+    try:
+        # Получаем user_id
+        response = supabase.table("oauth_states")\
+            .select("user_id")\
+            .eq("state", state)\
+            .execute()
+        
+        if not response.data:
+            return None
+        
+        user_id = response.data[0]["user_id"]
+        
+        # Удаляем использованный state
+        supabase.table("oauth_states")\
+            .delete()\
+            .eq("state", state)\
+            .execute()
+        
+        return user_id
+    except Exception as e:
+        print(f"Error getting OAuth state: {e}")
+        return None
+
+def cleanup_old_oauth_states() -> int:
+    """
+    Удалить старые OAuth states (старше 15 минут)
+    """
+    try:
+        cutoff_time = (datetime.utcnow() - timedelta(minutes=15)).isoformat()
+        response = supabase.table("oauth_states")\
+            .delete()\
+            .lt("created_at", cutoff_time)\
+            .execute()
+        return len(response.data) if response.data else 0
+    except Exception as e:
+        print(f"Error cleaning up OAuth states: {e}")
+        return 0
 
 # ==================== Pinterest Connections ====================
 
@@ -232,29 +290,24 @@ def get_user_stats(user_id: str) -> Optional[Dict]:
     Получить статистику постов пользователя
     """
     try:
-        response = supabase.rpc("get_user_stats", {"p_user_id": user_id}).execute()
-        return response.data[0] if response.data else None
+        posts = get_user_posts(user_id, limit=1000)
+        
+        stats = {
+            "total_posts": len(posts),
+            "total_published": len([p for p in posts if p["status"] == "published"]),
+            "total_scheduled": len([p for p in posts if p["status"] == "scheduled"]),
+            "total_failed": len([p for p in posts if p["status"] == "failed"]),
+            "last_published_at": None
+        }
+        
+        published_posts = [p for p in posts if p["status"] == "published" and p.get("published_at")]
+        if published_posts:
+            stats["last_published_at"] = max(p["published_at"] for p in published_posts)
+        
+        return stats
     except Exception as e:
         print(f"Error getting user stats: {e}")
-        # Fallback: считаем вручную
-        try:
-            posts = get_user_posts(user_id, limit=1000)
-            
-            stats = {
-                "total_posts": len(posts),
-                "total_published": len([p for p in posts if p["status"] == "published"]),
-                "total_scheduled": len([p for p in posts if p["status"] == "scheduled"]),
-                "total_failed": len([p for p in posts if p["status"] == "failed"]),
-                "last_published_at": None
-            }
-            
-            published_posts = [p for p in posts if p["status"] == "published" and p.get("published_at")]
-            if published_posts:
-                stats["last_published_at"] = max(p["published_at"] for p in published_posts)
-            
-            return stats
-        except:
-            return None
+        return None
 
 # ==================== Pin Analytics ====================
 
@@ -358,6 +411,3 @@ def get_user_analytics_summary(user_id: str, days: int = 30) -> Dict:
             "total_pin_clicks": 0,
             "period_days": days
         }
-
-# Импорт для аналитики
-from datetime import timedelta
