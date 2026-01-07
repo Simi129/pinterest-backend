@@ -16,6 +16,8 @@ class PinterestClient:
             "Content-Type": "application/json"
         }
     
+    # ==================== User Info ====================
+    
     def get_user_info(self) -> Dict:
         """
         Получить информацию о текущем пользователе
@@ -32,6 +34,8 @@ class PinterestClient:
                 print(f"Response: {e.response.text}")
             raise
     
+    # ==================== Boards ====================
+    
     def get_boards(self) -> List[Dict]:
         """
         Получить список досок пользователя
@@ -46,6 +50,92 @@ class PinterestClient:
         except requests.exceptions.RequestException as e:
             print(f"Error fetching boards: {e}")
             raise
+    
+    def create_board(
+        self,
+        name: str,
+        description: str = "",
+        privacy: str = "PUBLIC"
+    ) -> Dict:
+        """
+        Создать новую доску в Pinterest
+        
+        Args:
+            name: Название доски
+            description: Описание доски
+            privacy: PUBLIC или SECRET
+            
+        Returns:
+            Данные созданной доски
+        """
+        url = f"{self.base_url}/boards"
+        
+        payload = {
+            "name": name,
+            "privacy": privacy
+        }
+        
+        if description:
+            payload["description"] = description
+        
+        try:
+            response = requests.post(url, json=payload, headers=self.headers)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            print(f"Error creating board: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                print(f"Response: {e.response.text}")
+            raise
+    
+    def update_board(
+        self,
+        board_id: str,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        privacy: Optional[str] = None
+    ) -> Dict:
+        """
+        Обновить доску
+        """
+        url = f"{self.base_url}/boards/{board_id}"
+        
+        payload = {}
+        
+        if name:
+            payload["name"] = name
+        if description is not None:
+            payload["description"] = description
+        if privacy:
+            payload["privacy"] = privacy
+        
+        try:
+            response = requests.patch(url, json=payload, headers=self.headers)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            print(f"Error updating board: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                print(f"Response: {e.response.text}")
+            raise
+    
+    def delete_board(self, board_id: str) -> bool:
+        """
+        Удалить доску
+        """
+        url = f"{self.base_url}/boards/{board_id}"
+        
+        try:
+            response = requests.delete(url, headers=self.headers)
+            response.raise_for_status()
+            return True
+        except requests.exceptions.RequestException as e:
+            print(f"Error deleting board: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                print(f"Response: {e.response.text}")
+            raise
+    
+    # ==================== Pins ====================
     
     def create_pin(
         self,

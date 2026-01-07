@@ -7,7 +7,12 @@ from datetime import datetime, timedelta
 import asyncio
 import secrets
 
-from app.models import PublishNowRequest, SchedulePostRequest
+from app.models import (
+    PublishNowRequest, 
+    SchedulePostRequest,
+    CreateBoardRequest,
+    UpdateBoardRequest
+)
 from app.pinterest import get_pinterest_client
 from app.database import (
     create_post, update_post_status, get_post,
@@ -98,24 +103,17 @@ def health_check():
 
 @app.get("/auth/pinterest")
 def pinterest_auth(request: Request, user_id: str = Query(...)):
-    """
-    Начало OAuth flow - редирект на Pinterest для авторизации
-    """
-    # Очищаем старые states
+    """Начало OAuth flow - редирект на Pinterest для авторизации"""
     cleanup_old_oauth_states()
     
-    # Генерируем случайный state
     state = secrets.token_urlsafe(32)
     
-    # Сохраняем state в БД
     if not save_oauth_state(state, user_id):
         raise HTTPException(status_code=500, detail="Failed to save OAuth state")
     
-    # Формируем redirect_uri
     backend_url = os.getenv('BACKEND_URL', str(request.base_url).rstrip('/'))
     redirect_uri = f"{backend_url}/auth/pinterest/callback"
     
-    # Генерируем URL авторизации
     auth_url = get_authorization_url(redirect_uri, state)
     
     return RedirectResponse(auth_url)
@@ -126,26 +124,20 @@ async def pinterest_callback(
     code: str = Query(...),
     state: str = Query(...)
 ):
-    """
-    Callback после авторизации в Pinterest
-    """
+    """Callback после авторизации в Pinterest"""
     try:
-        # Получаем user_id из БД
         user_id = get_oauth_state(state)
         
         if not user_id:
             raise HTTPException(status_code=400, detail="Invalid or expired state parameter")
         
-        # Обмениваем code на access token
         backend_url = os.getenv('BACKEND_URL', str(request.base_url).rstrip('/'))
         redirect_uri = f"{backend_url}/auth/pinterest/callback"
         token_data = exchange_code_for_token(code, redirect_uri)
         
-        # Получаем информацию о пользователе Pinterest
         pinterest = get_pinterest_client(token_data["access_token"])
         pinterest_user = pinterest.get_user_info()
         
-        # Сохраняем подключение в БД
         connection_data = {
             "user_id": user_id,
             "access_token": token_data["access_token"],
@@ -158,7 +150,6 @@ async def pinterest_callback(
         
         create_pinterest_connection(connection_data)
         
-        # Редирект обратно на фронтенд
         frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
         return RedirectResponse(f"{frontend_url}?pinterest_connected=true")
         
@@ -191,7 +182,7 @@ def pinterest_status(user_id: str = Query(...)):
         "connected_at": connection.get("created_at")
     }
 
-# ==================== Pinterest API Endpoints ====================
+# ==================== Board Management Endpoints ====================
 
 @app.get("/api/boards")
 def get_boards(user_id: str = Query(...)):
@@ -208,6 +199,65 @@ def get_boards(user_id: str = Query(...)):
         return {"boards": boards}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/boards/create")
+def create_board(request: CreateBoardRequest):
+    """Создать новую доску в Pinterest"""
+    try:
+        connection = get_pinterest_connection(request.user_id)
+        
+        if not connection:
+            raise HTTPException(status_code=401, detail="Pinterest not connected")
+        
+        pinterest = get_pinterest_client(connection["access_token"])
+        board = pinterest.create_board(
+            name=request.name,
+            description=request.description,
+            privacy=request.privacy
+        )
+        
+        return {"status": "success", "board": board}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.patch("/api/boards/{board_id}")
+def update_board(board_id: str, request: UpdateBoardRequest):
+    """Обновить доску"""
+    try:
+        connection = get_pinterest_connection(request.user_id)
+        
+        if not connection:
+            raise HTTPException(status_code=401, detail="Pinterest not connected")
+        
+        pinterest = get_pinterest_client(connection["access_token"])
+        board = pinterest.update_board(
+            board_id=board_id,
+            name=request.name,
+            description=request.description,
+            privacy=request.privacy
+        )
+        
+        return {"status": "success", "board": board}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/boards/{board_id}")
+def delete_board(board_id: str, user_id: str = Query(...)):
+    """Удалить доску"""
+    try:
+        connection = get_pinterest_connection(user_id)
+        
+        if not connection:
+            raise HTTPException(status_code=401, detail="Pinterest not connected")
+        
+        pinterest = get_pinterest_client(connection["access_token"])
+        pinterest.delete_board(board_id)
+        
+        return {"status": "success", "message": "Board deleted"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==================== Pin Management Endpoints ====================
 
 @app.post("/api/publish-now")
 async def publish_now(request: PublishNowRequest, background_tasks: BackgroundTasks):

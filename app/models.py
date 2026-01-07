@@ -57,3 +57,23 @@ class PinAnalytics(BaseModel):
     saves: int
     clicks: int
     date: datetime
+
+# ==================== Board Models ====================
+
+class CreateBoardRequest(BaseModel):
+    """
+    Модель для создания доски
+    """
+    user_id: str
+    name: str
+    description: Optional[str] = ""
+    privacy: Optional[str] = "PUBLIC"  # PUBLIC или SECRET
+
+class UpdateBoardRequest(BaseModel):
+    """
+    Модель для обновления доски
+    """
+    user_id: str
+    name: Optional[str] = None
+    description: Optional[str] = None
+    privacy: Optional[str] = None
