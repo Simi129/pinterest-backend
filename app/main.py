@@ -1,5 +1,5 @@
 # app/main.py
-from fastapi import FastAPI, BackgroundTasks, HTTPException, Query
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 import os
@@ -21,7 +21,8 @@ app = FastAPI(title="Pinterest Automation API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://autopin-five.vercel.app/",
+        "http://localhost:3000",
+        "https://autopin-five.vercel.app",
         os.getenv("FRONTEND_URL", ""),
     ],
     allow_credentials=True,
@@ -98,7 +99,7 @@ def health_check():
 # ==================== OAuth Endpoints ====================
 
 @app.get("/auth/pinterest")
-def pinterest_auth(user_id: str = Query(...)):
+def pinterest_auth(request: Request, user_id: str = Query(...)):
     """
     Начало OAuth flow - редирект на Pinterest для авторизации
     """
@@ -111,8 +112,9 @@ def pinterest_auth(user_id: str = Query(...)):
         "created_at": datetime.utcnow()
     }
     
-    # Формируем redirect_uri
-    redirect_uri = f"{os.getenv('BACKEND_URL')}/auth/pinterest/callback"
+    # Формируем redirect_uri из base URL
+    base_url = str(request.base_url).rstrip('/')
+    redirect_uri = f"{base_url}/auth/pinterest/callback"
     
     # Генерируем URL авторизации
     auth_url = get_authorization_url(redirect_uri, state)
@@ -121,6 +123,7 @@ def pinterest_auth(user_id: str = Query(...)):
 
 @app.get("/auth/pinterest/callback")
 async def pinterest_callback(
+    request: Request,
     code: str = Query(...),
     state: str = Query(...)
 ):
@@ -136,7 +139,8 @@ async def pinterest_callback(
         user_id = state_data["user_id"]
         
         # Обмениваем code на access token
-        redirect_uri = f"{os.getenv('BACKEND_URL', 'http://localhost:8000')}/auth/pinterest/callback"
+        base_url = str(request.base_url).rstrip('/')
+        redirect_uri = f"{base_url}/auth/pinterest/callback"
         token_data = exchange_code_for_token(code, redirect_uri)
         
         # Получаем информацию о пользователе Pinterest
@@ -157,13 +161,13 @@ async def pinterest_callback(
         create_pinterest_connection(connection_data)
         
         # Редирект обратно на фронтенд
-        frontend_url = os.getenv("FRONTEND_URL")
-        return RedirectResponse(f"{frontend_url}/dashboard?pinterest_connected=true")
+        frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
+        return RedirectResponse(f"{frontend_url}?pinterest_connected=true")
         
     except Exception as e:
         print(f"Error in Pinterest callback: {e}")
-        frontend_url = os.getenv("FRONTEND_URL")
-        return RedirectResponse(f"{frontend_url}/dashboard?pinterest_error=true")
+        frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
+        return RedirectResponse(f"{frontend_url}?pinterest_error=true")
 
 @app.delete("/auth/pinterest/disconnect")
 def disconnect_pinterest(user_id: str = Query(...)):
