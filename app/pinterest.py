@@ -1,11 +1,11 @@
 # app/pinterest.py
 import requests
 import os
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 
 class PinterestClient:
     """
-    Клиент для работы с Pinterest API
+    Клиент для работы с Pinterest API v5
     """
     
     def __init__(self, access_token: Optional[str] = None):
@@ -16,51 +16,23 @@ class PinterestClient:
             "Content-Type": "application/json"
         }
     
-    def create_pin(
-        self,
-        board_id: str,
-        image_url: str,
-        title: str,
-        description: str = "",
-        link: str = ""
-    ) -> Dict:
+    def get_user_info(self) -> Dict:
         """
-        Создание нового пина в Pinterest
-        
-        Args:
-            board_id: ID доски Pinterest
-            image_url: URL изображения
-            title: Заголовок пина
-            description: Описание пина
-            link: Ссылка для пина
-            
-        Returns:
-            Данные созданного пина
+        Получить информацию о текущем пользователе
         """
-        url = f"{self.base_url}/pins"
-        
-        payload = {
-            "board_id": board_id,
-            "media_source": {
-                "source_type": "image_url",
-                "url": image_url
-            },
-            "title": title,
-            "description": description,
-        }
-        
-        if link:
-            payload["link"] = link
+        url = f"{self.base_url}/user_account"
         
         try:
-            response = requests.post(url, json=payload, headers=self.headers)
+            response = requests.get(url, headers=self.headers)
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
-            print(f"Error creating pin: {e}")
+            print(f"Error getting user info: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                print(f"Response: {e.response.text}")
             raise
     
-    def get_boards(self) -> Dict:
+    def get_boards(self) -> List[Dict]:
         """
         Получить список досок пользователя
         """
@@ -69,9 +41,60 @@ class PinterestClient:
         try:
             response = requests.get(url, headers=self.headers)
             response.raise_for_status()
-            return response.json()
+            data = response.json()
+            return data.get("items", [])
         except requests.exceptions.RequestException as e:
             print(f"Error fetching boards: {e}")
+            raise
+    
+    def create_pin(
+        self,
+        board_id: str,
+        media_source: Dict,
+        title: str,
+        description: str = "",
+        link: str = "",
+        alt_text: str = ""
+    ) -> Dict:
+        """
+        Создание нового пина
+        
+        Args:
+            board_id: ID доски Pinterest
+            media_source: Источник медиа (image_url или image_base64)
+            title: Заголовок пина
+            description: Описание пина
+            link: Ссылка для пина
+            alt_text: Альтернативный текст для изображения
+            
+        Returns:
+            Данные созданного пина
+        """
+        url = f"{self.base_url}/pins"
+        
+        payload = {
+            "board_id": board_id,
+            "title": title,
+            "media_source": media_source
+        }
+        
+        if description:
+            payload["description"] = description
+        
+        if link:
+            payload["link"] = link
+            
+        if alt_text:
+            payload["alt_text"] = alt_text
+        
+        try:
+            response = requests.post(url, json=payload, headers=self.headers)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            print(f"Error creating pin: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                print(f"Response: {e.response.text}")
             raise
     
     def get_pin(self, pin_id: str) -> Dict:
@@ -88,22 +111,21 @@ class PinterestClient:
             print(f"Error fetching pin: {e}")
             raise
     
-    def get_pin_analytics(self, pin_id: str) -> Dict:
+    def delete_pin(self, pin_id: str) -> bool:
         """
-        Получить аналитику по пину
+        Удалить пин
         """
-        url = f"{self.base_url}/pins/{pin_id}/analytics"
+        url = f"{self.base_url}/pins/{pin_id}"
         
         try:
-            response = requests.get(url, headers=self.headers)
+            response = requests.delete(url, headers=self.headers)
             response.raise_for_status()
-            return response.json()
+            return True
         except requests.exceptions.RequestException as e:
-            print(f"Error fetching analytics: {e}")
+            print(f"Error deleting pin: {e}")
             raise
 
 
-# Вспомогательная функция для быстрого создания клиента
 def get_pinterest_client(access_token: Optional[str] = None) -> PinterestClient:
     """
     Создать экземпляр Pinterest клиента
