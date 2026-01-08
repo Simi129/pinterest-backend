@@ -8,8 +8,7 @@ class PostCreate(BaseModel):
     Модель для создания поста
     """
     board_id: str
-    image_url: Optional[HttpUrl] = None
-    image_base64: Optional[str] = None
+    image_url: HttpUrl
     title: str
     description: Optional[str] = ""
     link: Optional[HttpUrl] = None
@@ -31,8 +30,7 @@ class PublishNowRequest(BaseModel):
     Модель для немедленной публикации
     """
     board_id: str
-    image_url: Optional[HttpUrl] = None
-    image_base64: Optional[str] = None
+    image_url: HttpUrl
     title: str
     description: Optional[str] = ""
     link: Optional[HttpUrl] = None
@@ -43,8 +41,7 @@ class SchedulePostRequest(BaseModel):
     Модель для запланированной публикации
     """
     board_id: str
-    image_url: Optional[HttpUrl] = None
-    image_base64: Optional[str] = None
+    image_url: HttpUrl
     title: str
     description: Optional[str] = ""
     link: Optional[HttpUrl] = None

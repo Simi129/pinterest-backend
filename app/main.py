@@ -57,23 +57,18 @@ async def publish_post(post_id: str, user_id: str):
         
         pinterest = get_pinterest_client(connection["access_token"])
         
-        # Определяем media_source в зависимости от типа изображения
-        if post.get("image_base64"):
-            media_source = {
-                "source_type": "image_base64",
-                "data": post["image_base64"]
-            }
-            print(f"📸 Creating pin with base64 image (size: {len(post['image_base64'])} chars)")
-        elif post.get("image_url"):
-            media_source = {
-                "source_type": "image_url",
-                "url": post["image_url"]
-            }
-            print(f"📸 Creating pin with image URL: {post['image_url']}")
-        else:
-            print(f"❌ No image provided for post {post_id}")
-            update_post_status(post_id, "failed", error_message="No image provided")
+        # Используем только image_url
+        if not post.get("image_url"):
+            print(f"❌ No image URL provided for post {post_id}")
+            update_post_status(post_id, "failed", error_message="No image URL provided")
             return
+        
+        media_source = {
+            "source_type": "image_url",
+            "url": post["image_url"]
+        }
+        
+        print(f"📸 Creating pin with image URL: {post['image_url']}")
         
         pin = pinterest.create_pin(
             board_id=post["board_id"],
@@ -148,21 +143,16 @@ def health_check():
 def pinterest_auth(request: Request, user_id: str = Query(...)):
     """Начало OAuth flow - редирект на Pinterest для авторизации"""
     try:
-        # Очищаем старые states
         cleanup_old_oauth_states()
         
-        # Генерируем случайный state
         state = secrets.token_urlsafe(32)
         
-        # Сохраняем state в БД
         if not save_oauth_state(state, user_id):
             raise HTTPException(status_code=500, detail="Failed to save OAuth state")
         
-        # Формируем redirect_uri
         backend_url = os.getenv('BACKEND_URL', str(request.base_url).rstrip('/'))
         redirect_uri = f"{backend_url}/auth/pinterest/callback"
         
-        # Генерируем URL авторизации
         auth_url = get_authorization_url(redirect_uri, state)
         
         print(f"🔐 Starting OAuth flow for user {user_id}")
@@ -180,23 +170,19 @@ async def pinterest_callback(
 ):
     """Callback после авторизации в Pinterest"""
     try:
-        # Получаем user_id из БД
         user_id = get_oauth_state(state)
         
         if not user_id:
             print(f"❌ Invalid or expired state: {state}")
             raise HTTPException(status_code=400, detail="Invalid or expired state parameter")
         
-        # Обмениваем code на access token
         backend_url = os.getenv('BACKEND_URL', str(request.base_url).rstrip('/'))
         redirect_uri = f"{backend_url}/auth/pinterest/callback"
         token_data = exchange_code_for_token(code, redirect_uri)
         
-        # Получаем информацию о пользователе Pinterest
         pinterest = get_pinterest_client(token_data["access_token"])
         pinterest_user = pinterest.get_user_info()
         
-        # Сохраняем подключение в БД
         connection_data = {
             "user_id": user_id,
             "access_token": token_data["access_token"],
@@ -211,7 +197,6 @@ async def pinterest_callback(
         
         print(f"✅ Pinterest connected successfully for user {user_id}")
         
-        # Редирект обратно на фронтенд
         frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
         return RedirectResponse(f"{frontend_url}?pinterest_connected=true")
         
@@ -351,37 +336,25 @@ def delete_board(board_id: str, user_id: str = Query(...)):
 async def publish_now_endpoint(request: PublishNowRequest, background_tasks: BackgroundTasks):
     """Немедленная публикация пина"""
     try:
-        # Проверяем подключение
         connection = get_pinterest_connection(request.user_id)
         if not connection:
             raise HTTPException(status_code=401, detail="Pinterest not connected")
         
-        # Валидация: должен быть либо URL либо base64
-        if not request.image_url and not request.image_base64:
-            raise HTTPException(status_code=400, detail="Either image_url or image_base64 must be provided")
+        if not request.image_url:
+            raise HTTPException(status_code=400, detail="Image URL must be provided")
         
-        # Подготовка данных для поста
         post_data = {
             "user_id": request.user_id,
             "board_id": request.board_id,
             "title": request.title,
             "description": request.description,
             "link": str(request.link) if request.link else None,
+            "image_url": str(request.image_url),
             "status": "publishing"
         }
         
-        # Добавляем изображение
-        if request.image_base64:
-            post_data["image_base64"] = request.image_base64
-            print(f"📸 Publishing with base64 image")
-        elif request.image_url:
-            post_data["image_url"] = str(request.image_url)
-            print(f"📸 Publishing with image URL: {request.image_url}")
-        
-        # Создаём пост в БД
         post = create_post(post_data)
         
-        # Добавляем в фоновые задачи
         background_tasks.add_task(publish_post, post["id"], request.user_id)
         
         print(f"✅ Post {post['id']} queued for publishing")
@@ -398,42 +371,29 @@ async def publish_now_endpoint(request: PublishNowRequest, background_tasks: Bac
 async def schedule_post_endpoint(request: SchedulePostRequest, background_tasks: BackgroundTasks):
     """Запланированная публикация пина"""
     try:
-        # Проверяем подключение
         connection = get_pinterest_connection(request.user_id)
         if not connection:
             raise HTTPException(status_code=401, detail="Pinterest not connected")
         
-        # Валидация: должен быть либо URL либо base64
-        if not request.image_url and not request.image_base64:
-            raise HTTPException(status_code=400, detail="Either image_url or image_base64 must be provided")
+        if not request.image_url:
+            raise HTTPException(status_code=400, detail="Image URL must be provided")
         
-        # Валидация времени
         if request.scheduled_at <= datetime.utcnow():
             raise HTTPException(status_code=400, detail="Scheduled time must be in the future")
         
-        # Подготовка данных для поста
         post_data = {
             "user_id": request.user_id,
             "board_id": request.board_id,
             "title": request.title,
             "description": request.description,
             "link": str(request.link) if request.link else None,
+            "image_url": str(request.image_url),
             "scheduled_at": request.scheduled_at.isoformat(),
             "status": "scheduled"
         }
         
-        # Добавляем изображение
-        if request.image_base64:
-            post_data["image_base64"] = request.image_base64
-            print(f"📸 Scheduling with base64 image")
-        elif request.image_url:
-            post_data["image_url"] = str(request.image_url)
-            print(f"📸 Scheduling with image URL: {request.image_url}")
-        
-        # Создаём пост в БД
         post = create_post(post_data)
         
-        # Добавляем отложенную задачу
         background_tasks.add_task(schedule_publish, post["id"], request.user_id, request.scheduled_at)
         
         print(f"📅 Post {post['id']} scheduled for {request.scheduled_at}")
