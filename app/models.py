@@ -8,7 +8,8 @@ class PostCreate(BaseModel):
     Модель для создания поста
     """
     board_id: str
-    image_url: HttpUrl
+    image_url: Optional[HttpUrl] = None
+    image_base64: Optional[str] = None
     title: str
     description: Optional[str] = ""
     link: Optional[HttpUrl] = None
@@ -30,7 +31,8 @@ class PublishNowRequest(BaseModel):
     Модель для немедленной публикации
     """
     board_id: str
-    image_url: HttpUrl
+    image_url: Optional[HttpUrl] = None
+    image_base64: Optional[str] = None
     title: str
     description: Optional[str] = ""
     link: Optional[HttpUrl] = None
@@ -41,7 +43,8 @@ class SchedulePostRequest(BaseModel):
     Модель для запланированной публикации
     """
     board_id: str
-    image_url: HttpUrl
+    image_url: Optional[HttpUrl] = None
+    image_base64: Optional[str] = None
     title: str
     description: Optional[str] = ""
     link: Optional[HttpUrl] = None
@@ -58,8 +61,6 @@ class PinAnalytics(BaseModel):
     clicks: int
     date: datetime
 
-# ==================== Board Models ====================
-
 class CreateBoardRequest(BaseModel):
     """
     Модель для создания доски
@@ -67,7 +68,7 @@ class CreateBoardRequest(BaseModel):
     user_id: str
     name: str
     description: Optional[str] = ""
-    privacy: Optional[str] = "PUBLIC"  # PUBLIC или SECRET
+    privacy: Optional[str] = "PUBLIC"
 
 class UpdateBoardRequest(BaseModel):
     """
