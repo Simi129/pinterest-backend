@@ -1,16 +1,43 @@
 # app/oauth.py
 import requests
 import os
+import secrets
 from urllib.parse import urlencode
-from typing import Dict
+from typing import Dict, Tuple
 import base64
 
 PINTEREST_OAUTH_URL = "https://www.pinterest.com/oauth/"
 PINTEREST_TOKEN_URL = "https://api.pinterest.com/v5/oauth/token"
 
+def get_pinterest_auth_url() -> Tuple[str, str]:
+    """
+    Генерирует URL для авторизации пользователя в Pinterest
+    
+    Returns:
+        Tuple[str, str]: (auth_url, state)
+    """
+    # Генерируем state для CSRF защиты
+    state = secrets.token_urlsafe(32)
+    
+    redirect_uri = os.getenv("PINTEREST_REDIRECT_URI", "http://localhost:8000/auth/pinterest/callback")
+    
+    params = {
+        "client_id": os.getenv("PINTEREST_APP_ID"),
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": "ads:read,boards:read,boards:write,pins:read,pins:write,user_accounts:read",
+        "state": state
+    }
+    
+    auth_url = f"{PINTEREST_OAUTH_URL}?{urlencode(params)}"
+    print(f"🔗 Generated OAuth URL with state: {state}")
+    
+    return auth_url, state
+
 def get_authorization_url(redirect_uri: str, state: str) -> str:
     """
     Генерирует URL для авторизации пользователя в Pinterest
+    (Оставлена для обратной совместимости)
     
     Args:
         redirect_uri: URL для возврата после авторизации
@@ -23,7 +50,6 @@ def get_authorization_url(redirect_uri: str, state: str) -> str:
         "client_id": os.getenv("PINTEREST_APP_ID"),
         "redirect_uri": redirect_uri,
         "response_type": "code",
-        # ОБНОВЛЁННЫЕ SCOPES для Pinterest API v5
         "scope": "ads:read,boards:read,boards:write,pins:read,pins:write,user_accounts:read",
         "state": state
     }
@@ -33,19 +59,19 @@ def get_authorization_url(redirect_uri: str, state: str) -> str:
     
     return auth_url
 
-def exchange_code_for_token(code: str, redirect_uri: str) -> Dict:
+def exchange_code_for_token(code: str) -> Dict:
     """
     Обменивает authorization code на access token
     
     Args:
         code: Authorization code из callback
-        redirect_uri: Тот же redirect_uri что использовался при авторизации
         
     Returns:
         Dict с access_token, refresh_token, expires_in и другими данными
     """
     app_id = os.getenv("PINTEREST_APP_ID")
     app_secret = os.getenv("PINTEREST_APP_SECRET")
+    redirect_uri = os.getenv("PINTEREST_REDIRECT_URI", "http://localhost:8000/auth/pinterest/callback")
     
     if not app_id or not app_secret:
         raise ValueError("PINTEREST_APP_ID and PINTEREST_APP_SECRET must be set")
@@ -87,6 +113,19 @@ def exchange_code_for_token(code: str, redirect_uri: str) -> Dict:
     except Exception as e:
         print(f"❌ Unexpected error exchanging code for token: {e}")
         raise
+
+def refresh_pinterest_token(refresh_token: str) -> Dict:
+    """
+    Обновляет access token используя refresh token
+    (Alias для refresh_access_token)
+    
+    Args:
+        refresh_token: Refresh token полученный при авторизации
+        
+    Returns:
+        Dict с новым access_token и другими данными
+    """
+    return refresh_access_token(refresh_token)
 
 def refresh_access_token(refresh_token: str) -> Dict:
     """
