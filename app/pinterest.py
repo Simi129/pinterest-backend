@@ -78,26 +78,14 @@ class PinterestClient:
         if description:
             payload["description"] = description
         
-        print(f"🔍 ===== PINTEREST API REQUEST DEBUG =====")
-        print(f"   URL: {url}")
-        print(f"   Payload: {payload}")
-        print(f"   Headers Authorization: Bearer {self.access_token[:30]}...")
-        print(f"   Headers Content-Type: {self.headers.get('Content-Type')}")
-        
         try:
             response = requests.post(url, json=payload, headers=self.headers)
-            
-            print(f"📥 Response Status: {response.status_code}")
-            print(f"📥 Response Headers: {dict(response.headers)}")
-            print(f"📥 Response Body: {response.text}")
-            
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
-            print(f"❌ Error creating board: {e}")
+            print(f"Error creating board: {e}")
             if hasattr(e, 'response') and e.response is not None:
-                print(f"❌ Response Status: {e.response.status_code}")
-                print(f"❌ Response Body: {e.response.text}")
+                print(f"Response: {e.response.text}")
             raise
     
     def update_board(
