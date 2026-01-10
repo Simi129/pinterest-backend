@@ -113,7 +113,7 @@ def pinterest_callback(code: str, state: str):
         if not user_id:
             raise HTTPException(status_code=400, detail="Invalid state")
         
-        # Обмениваем code на access token
+        # Обмениваем code на access token (redirect_uri не нужен, берется из env)
         token_data = exchange_code_for_token(code)
         
         # Получаем информацию о пользователе Pinterest
