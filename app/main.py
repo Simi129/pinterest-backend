@@ -267,21 +267,67 @@ def create_board(request: CreateBoardRequest):
         if not connection:
             raise HTTPException(status_code=401, detail="Pinterest not connected")
         
+        # Детальное логирование для диагностики
+        print(f"🔑 Access token (first 20 chars): {connection['access_token'][:20]}...")
+        print(f"📋 Stored scopes: {connection.get('scopes', [])}")
+        print(f"👤 Pinterest user: {connection.get('pinterest_username', 'unknown')}")
+        
         pinterest = get_pinterest_client(connection["access_token"])
+        
+        # Проверяем информацию о пользователе для диагностики
+        try:
+            user_info = pinterest.get_user_info()
+            print(f"👤 User account type: {user_info.get('account_type', 'unknown')}")
+            print(f"👤 User ID: {user_info.get('id', 'unknown')}")
+        except Exception as e:
+            print(f"⚠️ Could not get user info for diagnostics: {e}")
+        
+        # Нормализуем privacy значение
+        privacy = request.privacy.upper() if request.privacy else "PUBLIC"
+        if privacy not in ["PUBLIC", "SECRET"]:
+            print(f"⚠️ Invalid privacy value: {request.privacy}, using PUBLIC")
+            privacy = "PUBLIC"
+        
+        print(f"📝 Creating board:")
+        print(f"   Name: {request.name}")
+        print(f"   Description: {request.description or '(empty)'}")
+        print(f"   Privacy: {privacy}")
+        
         board = pinterest.create_board(
             name=request.name,
-            description=request.description,
-            privacy=request.privacy
+            description=request.description or "",
+            privacy=privacy
         )
         
-        print(f"✅ Board created: {request.name} for user {request.user_id}")
+        print(f"✅ Board created successfully: {request.name} for user {request.user_id}")
+        print(f"✅ Board ID: {board.get('id', 'unknown')}")
         
         return {"status": "success", "board": board}
+        
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ Error creating board: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        error_msg = str(e)
+        print(f"❌ Error creating board: {error_msg}")
+        
+        # Специальная обработка для 403 ошибки
+        if "403" in error_msg or "Forbidden" in error_msg:
+            detailed_error = (
+                "Pinterest API access denied (403 Forbidden). "
+                "Possible reasons:\n"
+                "1. Your Pinterest app needs App Review approval for write access\n"
+                "2. Your app is in 'Development' mode - use a Test Account\n"
+                "3. The access token doesn't have 'boards:write' scope\n"
+                "4. Your Pinterest account type may have restrictions\n\n"
+                "To fix this:\n"
+                "- Submit your app for App Review at https://developers.pinterest.com/apps/\n"
+                "- OR create a Test Account in your Pinterest Developer Console\n"
+                "- OR use existing boards instead of creating new ones"
+            )
+            raise HTTPException(status_code=403, detail=detailed_error)
+        
+        # Для других ошибок
+        raise HTTPException(status_code=500, detail=f"Failed to create board: {error_msg}")
 
 @app.patch("/api/boards/{board_id}")
 def update_board(board_id: str, request: UpdateBoardRequest):

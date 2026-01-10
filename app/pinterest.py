@@ -62,30 +62,62 @@ class PinterestClient:
         
         Args:
             name: Название доски
-            description: Описание доски
-            privacy: PUBLIC или SECRET
+            description: Описание доски (опционально)
+            privacy: PUBLIC или SECRET (по умолчанию PUBLIC)
             
         Returns:
             Данные созданной доски
         """
         url = f"{self.base_url}/boards"
         
+        # Нормализуем privacy значение
+        privacy = privacy.upper()
+        if privacy not in ["PUBLIC", "SECRET"]:
+            print(f"⚠️ Invalid privacy value: {privacy}, defaulting to PUBLIC")
+            privacy = "PUBLIC"
+        
+        # Формируем payload строго по документации Pinterest API v5
         payload = {
-            "name": name,
+            "name": name.strip(),
             "privacy": privacy
         }
         
-        if description:
-            payload["description"] = description
+        # Добавляем description только если оно не пустое
+        if description and description.strip():
+            payload["description"] = description.strip()
+        
+        print(f"📤 Creating board with payload: {payload}")
+        print(f"🔑 Using access token: {self.access_token[:20] if self.access_token else 'None'}...")
+        print(f"🌐 Request URL: {url}")
         
         try:
             response = requests.post(url, json=payload, headers=self.headers)
+            print(f"📥 Response status: {response.status_code}")
+            print(f"📥 Response headers: {dict(response.headers)}")
+            
+            # Проверяем статус код до raise_for_status
+            if response.status_code != 201 and response.status_code != 200:
+                print(f"❌ Non-success status code: {response.status_code}")
+                print(f"❌ Response body: {response.text}")
+            
             response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as e:
-            print(f"Error creating board: {e}")
+            result = response.json()
+            print(f"✅ Board created successfully")
+            print(f"✅ Board data: {result}")
+            return result
+            
+        except requests.exceptions.HTTPError as e:
+            print(f"❌ HTTP Error creating board: {e}")
             if hasattr(e, 'response') and e.response is not None:
-                print(f"Response: {e.response.text}")
+                print(f"Response status: {e.response.status_code}")
+                print(f"Response headers: {dict(e.response.headers)}")
+                print(f"Response body: {e.response.text}")
+            raise
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Request error creating board: {e}")
+            raise
+        except Exception as e:
+            print(f"❌ Unexpected error creating board: {e}")
             raise
     
     def update_board(
@@ -107,7 +139,7 @@ class PinterestClient:
         if description is not None:
             payload["description"] = description
         if privacy:
-            payload["privacy"] = privacy
+            payload["privacy"] = privacy.upper()
         
         try:
             response = requests.patch(url, json=payload, headers=self.headers)
