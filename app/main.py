@@ -1,463 +1,427 @@
 # app/main.py
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
-from typing import Optional
 import os
 from datetime import datetime, timedelta
+import asyncio
+import secrets
 
 from app.models import (
-    PostCreate, 
-    PostResponse, 
     PublishNowRequest, 
     SchedulePostRequest,
     CreateBoardRequest,
     UpdateBoardRequest
 )
-from app.database import (
-    get_pinterest_connection,
-    create_pinterest_connection,
-    delete_pinterest_connection,
-    create_post,
-    update_post_status,
-    get_user_posts,
-    get_user_stats,
-    get_post_analytics,
-    get_user_analytics_summary,
-    save_oauth_state,
-    get_oauth_state,
-    cleanup_old_oauth_states
-)
 from app.pinterest import get_pinterest_client
-from app.oauth import (
-    get_pinterest_auth_url,
-    exchange_code_for_token,
-    refresh_pinterest_token
+from app.database import (
+    create_post, update_post_status, get_post,
+    create_pinterest_connection, get_pinterest_connection,
+    delete_pinterest_connection,
+    save_oauth_state, get_oauth_state, cleanup_old_oauth_states
 )
+from app.oauth import get_authorization_url, exchange_code_for_token
 
-app = FastAPI(title="Pinterest Automation API")
+app = FastAPI(title="Pinterest Automation API", version="1.0.0")
 
-# CORS
+# CORS Configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:3000",
+        "https://autopin-five.vercel.app",
+        os.getenv("FRONTEND_URL", ""),
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ==================== Кеш для статусов ====================
-status_cache = {}
-CACHE_TTL = 300  # 5 минут
+# ==================== Background Tasks ====================
 
-def get_cached_status(user_id: str) -> Optional[dict]:
-    """Получить статус из кеша"""
-    if user_id in status_cache:
-        cached_data, timestamp = status_cache[user_id]
-        if datetime.utcnow().timestamp() - timestamp < CACHE_TTL:
-            return cached_data
-    return None
+async def publish_post(post_id: str, user_id: str):
+    """Публикация поста в Pinterest"""
+    try:
+        post = get_post(post_id)
+        
+        if not post:
+            print(f"❌ Post {post_id} not found")
+            return
+        
+        connection = get_pinterest_connection(user_id)
+        
+        if not connection:
+            print(f"❌ No Pinterest connection for user {user_id}")
+            update_post_status(post_id, "failed", error_message="Pinterest not connected")
+            return
+        
+        pinterest = get_pinterest_client(connection["access_token"])
+        
+        # Используем только image_url
+        if not post.get("image_url"):
+            print(f"❌ No image URL provided for post {post_id}")
+            update_post_status(post_id, "failed", error_message="No image URL provided")
+            return
+        
+        media_source = {
+            "source_type": "image_url",
+            "url": post["image_url"]
+        }
+        
+        print(f"📸 Creating pin with image URL: {post['image_url']}")
+        
+        pin = pinterest.create_pin(
+            board_id=post["board_id"],
+            media_source=media_source,
+            title=post["title"],
+            description=post.get("description", ""),
+            link=post.get("link", "")
+        )
+        
+        update_post_status(post_id, "published", pin.get("id"))
+        print(f"✅ Post {post_id} published successfully. Pin ID: {pin.get('id')}")
+        
+    except Exception as e:
+        error_msg = str(e)
+        print(f"❌ Error publishing post {post_id}: {error_msg}")
+        update_post_status(post_id, "failed", error_message=error_msg)
 
-def set_cached_status(user_id: str, status: dict):
-    """Сохранить статус в кеш"""
-    status_cache[user_id] = (status, datetime.utcnow().timestamp())
+async def schedule_publish(post_id: str, user_id: str, scheduled_at: datetime):
+    """Ждёт до нужного времени и публикует"""
+    try:
+        now = datetime.utcnow()
+        wait_seconds = (scheduled_at - now).total_seconds()
+        
+        if wait_seconds > 0:
+            print(f"⏰ Waiting {wait_seconds} seconds before publishing post {post_id}")
+            await asyncio.sleep(wait_seconds)
+        
+        await publish_post(post_id, user_id)
+    except Exception as e:
+        print(f"❌ Error in schedule_publish for post {post_id}: {e}")
 
-def clear_cached_status(user_id: str):
-    """Очистить статус из кеша"""
-    if user_id in status_cache:
-        del status_cache[user_id]
+# ==================== Startup Event ====================
 
-# ==================== Health Check ====================
+@app.on_event("startup")
+async def startup_event():
+    """Очистка старых OAuth states при запуске"""
+    try:
+        deleted_count = cleanup_old_oauth_states()
+        print(f"🧹 Cleaned up {deleted_count} old OAuth states")
+    except Exception as e:
+        print(f"⚠️ Error cleaning up OAuth states: {e}")
+
+# ==================== Health Check Endpoints ====================
 
 @app.get("/")
 def read_root():
-    return {"status": "ok", "message": "Pinterest Automation API"}
+    """Root endpoint"""
+    return {
+        "status": "ok",
+        "message": "Pinterest Automation API",
+        "version": "1.0.0",
+        "endpoints": {
+            "health": "/health",
+            "auth": "/auth/pinterest",
+            "boards": "/api/boards",
+            "publish": "/api/publish-now",
+            "schedule": "/api/schedule-post"
+        }
+    }
 
 @app.get("/health")
 def health_check():
-    """Health check для uptime мониторинга"""
+    """Health check endpoint"""
     return {
         "status": "healthy",
-        "timestamp": datetime.utcnow().isoformat(),
-        "cache_size": len(status_cache)
+        "timestamp": datetime.utcnow().isoformat()
     }
 
-# ==================== OAuth ====================
+# ==================== OAuth Endpoints ====================
 
 @app.get("/auth/pinterest")
-def pinterest_auth(user_id: str):
-    """
-    Начать OAuth процесс для Pinterest
-    """
+def pinterest_auth(request: Request, user_id: str = Query(...)):
+    """Начало OAuth flow - редирект на Pinterest для авторизации"""
     try:
-        auth_url, state = get_pinterest_auth_url()
+        cleanup_old_oauth_states()
         
-        # Сохраняем state в БД
-        from app.database import save_oauth_state
-        save_oauth_state(state, user_id)
+        state = secrets.token_urlsafe(32)
         
-        return RedirectResponse(url=auth_url)
+        if not save_oauth_state(state, user_id):
+            raise HTTPException(status_code=500, detail="Failed to save OAuth state")
+        
+        backend_url = os.getenv('BACKEND_URL', str(request.base_url).rstrip('/'))
+        redirect_uri = f"{backend_url}/auth/pinterest/callback"
+        
+        auth_url = get_authorization_url(redirect_uri, state)
+        
+        print(f"🔐 Starting OAuth flow for user {user_id}")
+        
+        return RedirectResponse(auth_url)
     except Exception as e:
-        print(f"Error initiating Pinterest auth: {e}")
+        print(f"❌ Error in pinterest_auth: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/auth/pinterest/callback")
-def pinterest_callback(code: str, state: str):
-    """
-    Обработка callback от Pinterest OAuth
-    """
+async def pinterest_callback(
+    request: Request,
+    code: str = Query(...),
+    state: str = Query(...)
+):
+    """Callback после авторизации в Pinterest"""
     try:
-        # Проверяем state и получаем user_id
         user_id = get_oauth_state(state)
+        
         if not user_id:
-            raise HTTPException(status_code=400, detail="Invalid state")
+            print(f"❌ Invalid or expired state: {state}")
+            raise HTTPException(status_code=400, detail="Invalid or expired state parameter")
         
-        # Обмениваем code на access token
-        token_data = exchange_code_for_token(code)
+        backend_url = os.getenv('BACKEND_URL', str(request.base_url).rstrip('/'))
+        redirect_uri = f"{backend_url}/auth/pinterest/callback"
+        token_data = exchange_code_for_token(code, redirect_uri)
         
-        # Получаем информацию о пользователе Pinterest
-        client = get_pinterest_client(token_data["access_token"])
-        user_info = client.get_user_info()
+        pinterest = get_pinterest_client(token_data["access_token"])
+        pinterest_user = pinterest.get_user_info()
         
-        # Сохраняем подключение в БД
         connection_data = {
             "user_id": user_id,
             "access_token": token_data["access_token"],
             "refresh_token": token_data.get("refresh_token"),
-            "pinterest_user_id": user_info.get("username", ""),
-            "pinterest_username": user_info.get("username", ""),
-            "expires_at": (datetime.utcnow() + timedelta(seconds=token_data.get("expires_in", 3600))).isoformat()
+            "expires_at": (datetime.utcnow() + timedelta(seconds=token_data.get("expires_in", 0))).isoformat() if token_data.get("expires_in") else None,
+            "pinterest_user_id": pinterest_user.get("id"),
+            "pinterest_username": pinterest_user.get("username"),
+            "scopes": token_data.get("scope", "").split(",")
         }
         
         create_pinterest_connection(connection_data)
         
-        # Очищаем кеш для этого пользователя
-        clear_cached_status(user_id)
+        print(f"✅ Pinterest connected successfully for user {user_id}")
         
-        # Редирект на фронтенд
         frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
-        return RedirectResponse(url=f"{frontend_url}/dashboard?pinterest_connected=true")
-    
+        return RedirectResponse(f"{frontend_url}?pinterest_connected=true")
+        
     except Exception as e:
-        print(f"Error in Pinterest callback: {e}")
+        print(f"❌ Error in Pinterest callback: {e}")
         frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
-        return RedirectResponse(url=f"{frontend_url}/dashboard?error=connection_failed")
-
-@app.get("/auth/pinterest/status")
-def get_pinterest_connection_status(user_id: str = Query(...)):
-    """
-    Проверить статус подключения Pinterest (С КЕШИРОВАНИЕМ!)
-    """
-    try:
-        # Проверяем кеш
-        cached = get_cached_status(user_id)
-        if cached:
-            print(f"✅ Cache hit for user {user_id}")
-            return cached
-        
-        print(f"⏱️ Cache miss, fetching from DB for user {user_id}")
-        
-        # Получаем из БД
-        connection = get_pinterest_connection(user_id)
-        
-        if connection and connection.get("access_token"):
-            result = {
-                "connected": True,
-                "pinterest_username": connection.get("pinterest_username", "Unknown"),
-                "pinterest_user_id": connection.get("pinterest_user_id", "")
-            }
-        else:
-            result = {"connected": False}
-        
-        # Сохраняем в кеш
-        set_cached_status(user_id, result)
-        
-        return result
-    
-    except Exception as e:
-        print(f"❌ Error checking Pinterest status: {e}")
-        # Возвращаем дефолтный ответ при ошибке
-        return {"connected": False}
+        return RedirectResponse(f"{frontend_url}?pinterest_error=true")
 
 @app.delete("/auth/pinterest/disconnect")
 def disconnect_pinterest(user_id: str = Query(...)):
-    """
-    Отключить Pinterest аккаунт
-    """
+    """Отключить Pinterest аккаунт"""
     try:
         delete_pinterest_connection(user_id)
-        clear_cached_status(user_id)
-        return {"success": True, "message": "Pinterest disconnected"}
+        print(f"🔌 Pinterest disconnected for user {user_id}")
+        return {"status": "success", "message": "Pinterest disconnected"}
     except Exception as e:
-        print(f"Error disconnecting Pinterest: {e}")
+        print(f"❌ Error disconnecting Pinterest: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# ==================== Boards ====================
-
-@app.get("/api/boards")
-def get_boards(user_id: str = Query(...)):
-    """
-    Получить список досок пользователя
-    """
+@app.get("/auth/pinterest/status")
+def pinterest_status(user_id: str = Query(...)):
+    """Проверить статус подключения Pinterest"""
     try:
         connection = get_pinterest_connection(user_id)
         
         if not connection:
-            raise HTTPException(status_code=404, detail="Pinterest not connected")
+            return {"connected": False}
         
-        client = get_pinterest_client(connection["access_token"])
-        boards = client.get_boards()
+        return {
+            "connected": True,
+            "pinterest_username": connection.get("pinterest_username"),
+            "pinterest_user_id": connection.get("pinterest_user_id"),
+            "connected_at": connection.get("created_at")
+        }
+    except Exception as e:
+        print(f"❌ Error checking Pinterest status: {e}")
+        return {"connected": False}
+
+# ==================== Board Management Endpoints ====================
+
+@app.get("/api/boards")
+def get_boards(user_id: str = Query(...)):
+    """Получить список досок пользователя"""
+    try:
+        connection = get_pinterest_connection(user_id)
         
-        return boards
+        if not connection:
+            raise HTTPException(status_code=401, detail="Pinterest not connected")
+        
+        pinterest = get_pinterest_client(connection["access_token"])
+        boards = pinterest.get_boards()
+        
+        print(f"📋 Retrieved {len(boards)} boards for user {user_id}")
+        
+        return {"boards": boards}
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error fetching boards: {e}")
+        print(f"❌ Error getting boards: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/boards/create")
 def create_board(request: CreateBoardRequest):
-    """
-    Создать новую доску
-    """
+    """Создать новую доску в Pinterest"""
     try:
         connection = get_pinterest_connection(request.user_id)
         
         if not connection:
-            raise HTTPException(status_code=404, detail="Pinterest not connected")
+            raise HTTPException(status_code=401, detail="Pinterest not connected")
         
-        client = get_pinterest_client(connection["access_token"])
-        board = client.create_board(
+        pinterest = get_pinterest_client(connection["access_token"])
+        board = pinterest.create_board(
             name=request.name,
-            description=request.description or "",
-            privacy=request.privacy or "PUBLIC"
+            description=request.description,
+            privacy=request.privacy
         )
         
-        return board
+        print(f"✅ Board created: {request.name} for user {request.user_id}")
+        
+        return {"status": "success", "board": board}
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error creating board: {e}")
+        print(f"❌ Error creating board: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.patch("/api/boards/{board_id}")
 def update_board(board_id: str, request: UpdateBoardRequest):
-    """
-    Обновить доску
-    """
+    """Обновить доску"""
     try:
         connection = get_pinterest_connection(request.user_id)
         
         if not connection:
-            raise HTTPException(status_code=404, detail="Pinterest not connected")
+            raise HTTPException(status_code=401, detail="Pinterest not connected")
         
-        client = get_pinterest_client(connection["access_token"])
-        board = client.update_board(
+        pinterest = get_pinterest_client(connection["access_token"])
+        board = pinterest.update_board(
             board_id=board_id,
             name=request.name,
             description=request.description,
             privacy=request.privacy
         )
         
-        return board
+        print(f"✅ Board updated: {board_id} for user {request.user_id}")
+        
+        return {"status": "success", "board": board}
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error updating board: {e}")
+        print(f"❌ Error updating board: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/api/boards/{board_id}")
 def delete_board(board_id: str, user_id: str = Query(...)):
-    """
-    Удалить доску
-    """
+    """Удалить доску"""
     try:
         connection = get_pinterest_connection(user_id)
         
         if not connection:
-            raise HTTPException(status_code=404, detail="Pinterest not connected")
+            raise HTTPException(status_code=401, detail="Pinterest not connected")
         
-        client = get_pinterest_client(connection["access_token"])
-        client.delete_board(board_id)
+        pinterest = get_pinterest_client(connection["access_token"])
+        pinterest.delete_board(board_id)
         
-        return {"success": True, "message": "Board deleted"}
+        print(f"🗑️ Board deleted: {board_id} for user {user_id}")
+        
+        return {"status": "success", "message": "Board deleted"}
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error deleting board: {e}")
+        print(f"❌ Error deleting board: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# ==================== Publish Now ====================
+# ==================== Pin Management Endpoints ====================
 
 @app.post("/api/publish-now")
-def publish_now(request: PublishNowRequest):
-    """
-    Немедленно опубликовать пин
-    """
+async def publish_now_endpoint(request: PublishNowRequest, background_tasks: BackgroundTasks):
+    """Немедленная публикация пина"""
     try:
         connection = get_pinterest_connection(request.user_id)
-        
         if not connection:
-            raise HTTPException(status_code=404, detail="Pinterest not connected")
+            raise HTTPException(status_code=401, detail="Pinterest not connected")
         
-        # Создаем пост в БД
+        if not request.image_url:
+            raise HTTPException(status_code=400, detail="Image URL must be provided")
+        
         post_data = {
             "user_id": request.user_id,
             "board_id": request.board_id,
-            "image_url": str(request.image_url),
             "title": request.title,
-            "description": request.description or "",
+            "description": request.description,
             "link": str(request.link) if request.link else None,
-            "status": "publishing",
-            "created_at": datetime.utcnow().isoformat()
+            "image_url": str(request.image_url),
+            "status": "publishing"
         }
         
         post = create_post(post_data)
         
-        # Публикуем в Pinterest
-        client = get_pinterest_client(connection["access_token"])
+        background_tasks.add_task(publish_post, post["id"], request.user_id)
         
-        media_source = {
-            "source_type": "image_url",
-            "url": str(request.image_url)
-        }
+        print(f"✅ Post {post['id']} queued for publishing")
         
-        pin = client.create_pin(
-            board_id=request.board_id,
-            media_source=media_source,
-            title=request.title,
-            description=request.description or "",
-            link=str(request.link) if request.link else ""
-        )
-        
-        # Обновляем статус поста
-        update_post_status(
-            post["id"],
-            "published",
-            pinterest_pin_id=pin.get("id")
-        )
-        
-        return {
-            "success": True,
-            "post_id": post["id"],
-            "pinterest_pin_id": pin.get("id"),
-            "status": "published"
-        }
+        return {"status": "publishing", "post_id": post["id"]}
     
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error publishing pin: {e}")
-        if post:
-            update_post_status(post["id"], "failed", error_message=str(e))
+        print(f"❌ Error in publish_now: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-# ==================== Schedule Post ====================
 
 @app.post("/api/schedule-post")
-def schedule_post(request: SchedulePostRequest):
-    """
-    Запланировать публикацию пина
-    """
+async def schedule_post_endpoint(request: SchedulePostRequest, background_tasks: BackgroundTasks):
+    """Запланированная публикация пина"""
     try:
         connection = get_pinterest_connection(request.user_id)
-        
         if not connection:
-            raise HTTPException(status_code=404, detail="Pinterest not connected")
+            raise HTTPException(status_code=401, detail="Pinterest not connected")
         
-        # Создаем запланированный пост
+        if not request.image_url:
+            raise HTTPException(status_code=400, detail="Image URL must be provided")
+        
+        if request.scheduled_at <= datetime.utcnow():
+            raise HTTPException(status_code=400, detail="Scheduled time must be in the future")
+        
         post_data = {
             "user_id": request.user_id,
             "board_id": request.board_id,
-            "image_url": str(request.image_url),
             "title": request.title,
-            "description": request.description or "",
+            "description": request.description,
             "link": str(request.link) if request.link else None,
-            "status": "scheduled",
+            "image_url": str(request.image_url),
             "scheduled_at": request.scheduled_at.isoformat(),
-            "created_at": datetime.utcnow().isoformat()
+            "status": "scheduled"
         }
         
         post = create_post(post_data)
         
-        return {
-            "success": True,
-            "post_id": post["id"],
-            "status": "scheduled",
-            "scheduled_at": request.scheduled_at.isoformat()
-        }
+        background_tasks.add_task(schedule_publish, post["id"], request.user_id, request.scheduled_at)
+        
+        print(f"📅 Post {post['id']} scheduled for {request.scheduled_at}")
+        
+        return {"status": "scheduled", "post_id": post["id"]}
     
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error scheduling post: {e}")
+        print(f"❌ Error in schedule_post: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# ==================== Posts ====================
+# ==================== Error Handlers ====================
 
-@app.get("/api/posts")
-def get_posts(
-    user_id: str = Query(...),
-    status: Optional[str] = None,
-    limit: int = 50,
-    offset: int = 0
-):
-    """
-    Получить посты пользователя
-    """
-    try:
-        posts = get_user_posts(user_id, status, limit, offset)
-        return posts
-    except Exception as e:
-        print(f"Error fetching posts: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+@app.exception_handler(404)
+async def not_found_handler(request: Request, exc):
+    """Custom 404 handler"""
+    return {
+        "status": "error",
+        "message": "Endpoint not found",
+        "path": str(request.url)
+    }
 
-# ==================== Stats & Analytics ====================
-
-@app.get("/api/stats")
-def get_stats(user_id: str = Query(...)):
-    """
-    Получить статистику пользователя
-    """
-    try:
-        stats = get_user_stats(user_id)
-        return stats
-    except Exception as e:
-        print(f"Error fetching stats: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/analytics/{post_id}")
-def get_analytics(post_id: str, days: int = 30):
-    """
-    Получить аналитику для поста
-    """
-    try:
-        analytics = get_post_analytics(post_id, days)
-        return analytics
-    except Exception as e:
-        print(f"Error fetching analytics: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/analytics/summary")
-def get_analytics_summary(user_id: str = Query(...), days: int = 30):
-    """
-    Получить сводную аналитику пользователя
-    """
-    try:
-        summary = get_user_analytics_summary(user_id, days)
-        return summary
-    except Exception as e:
-        print(f"Error fetching analytics summary: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ==================== Cleanup Task ====================
-
-@app.on_event("startup")
-async def startup_event():
-    """Очистка при старте"""
-    cleanup_old_oauth_states()
-    print("✅ Old OAuth states cleaned up")
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+@app.exception_handler(500)
+async def internal_error_handler(request: Request, exc):
+    """Custom 500 handler"""
+    return {
+        "status": "error",
+        "message": "Internal server error",
+        "detail": str(exc)
+    }
