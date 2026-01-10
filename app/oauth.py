@@ -59,19 +59,23 @@ def get_authorization_url(redirect_uri: str, state: str) -> str:
     
     return auth_url
 
-def exchange_code_for_token(code: str) -> Dict:
+def exchange_code_for_token(code: str, redirect_uri: str = None) -> Dict:
     """
     Обменивает authorization code на access token
     
     Args:
         code: Authorization code из callback
+        redirect_uri: Опциональный redirect_uri (если не указан, берется из env)
         
     Returns:
         Dict с access_token, refresh_token, expires_in и другими данными
     """
     app_id = os.getenv("PINTEREST_APP_ID")
     app_secret = os.getenv("PINTEREST_APP_SECRET")
-    redirect_uri = os.getenv("PINTEREST_REDIRECT_URI", "http://localhost:8000/auth/pinterest/callback")
+    
+    # Используем переданный redirect_uri или берём из переменной окружения
+    if not redirect_uri:
+        redirect_uri = os.getenv("PINTEREST_REDIRECT_URI", "http://localhost:8000/auth/pinterest/callback")
     
     if not app_id or not app_secret:
         raise ValueError("PINTEREST_APP_ID and PINTEREST_APP_SECRET must be set")
