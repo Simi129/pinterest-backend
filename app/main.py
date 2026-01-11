@@ -11,10 +11,10 @@ from app.models import (
 from app.pinterest import get_pinterest_client
 from app.oauth import get_authorization_url, exchange_code_for_token, refresh_access_token
 from app.database import (
-    get_user_pinterest_token,
-    save_pinterest_token,
-    delete_pinterest_token,
-    save_scheduled_post,
+    get_pinterest_connection,
+    create_pinterest_connection,
+    delete_pinterest_connection,
+    create_post,
     get_scheduled_posts
 )
 import os
@@ -69,15 +69,25 @@ async def pinterest_callback(code: str, state: str):
         client = get_pinterest_client(token_data["access_token"])
         user_info = client.get_user_info()
         
-        # Сохраняем токен в БД
-        save_pinterest_token(
-            user_id=user_id,
-            access_token=token_data["access_token"],
-            refresh_token=token_data.get("refresh_token"),
-            expires_in=token_data.get("expires_in"),
-            pinterest_user_id=user_info.get("username"),
-            pinterest_username=user_info.get("username")
-        )
+        # Рассчитываем expires_at
+        expires_in = token_data.get("expires_in", 0)
+        expires_at = None
+        if expires_in:
+            expires_at = (datetime.utcnow() + timedelta(seconds=expires_in)).isoformat()
+        
+        # Сохраняем токен в БД используя create_pinterest_connection
+        connection_data = {
+            "user_id": user_id,
+            "access_token": token_data["access_token"],
+            "refresh_token": token_data.get("refresh_token"),
+            "expires_at": expires_at,
+            "pinterest_user_id": user_info.get("username"),
+            "pinterest_username": user_info.get("username"),
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat()
+        }
+        
+        create_pinterest_connection(connection_data)
         
         return RedirectResponse(url=f"{os.getenv('FRONTEND_URL', 'http://localhost:3000')}/dashboard?pinterest_connected=true")
         
@@ -91,15 +101,15 @@ async def get_pinterest_status(user_id: str):
     Проверяет статус подключения Pinterest
     """
     try:
-        token_data = get_user_pinterest_token(user_id)
+        connection = get_pinterest_connection(user_id)
         
-        if not token_data:
+        if not connection:
             return {"connected": False}
         
         return {
             "connected": True,
-            "pinterest_username": token_data.get("pinterest_username"),
-            "pinterest_user_id": token_data.get("pinterest_user_id")
+            "pinterest_username": connection.get("pinterest_username"),
+            "pinterest_user_id": connection.get("pinterest_user_id")
         }
     except Exception as e:
         print(f"Error checking Pinterest status: {e}")
@@ -111,7 +121,7 @@ async def disconnect_pinterest(user_id: str):
     Отключает Pinterest аккаунт
     """
     try:
-        delete_pinterest_token(user_id)
+        delete_pinterest_connection(user_id)
         return {"success": True, "message": "Pinterest disconnected successfully"}
     except Exception as e:
         print(f"Error disconnecting Pinterest: {e}")
@@ -125,11 +135,11 @@ async def get_boards(user_id: str):
     Получить список досок пользователя
     """
     try:
-        token_data = get_user_pinterest_token(user_id)
-        if not token_data:
+        connection = get_pinterest_connection(user_id)
+        if not connection:
             raise HTTPException(status_code=401, detail="Pinterest not connected")
         
-        client = get_pinterest_client(token_data["access_token"])
+        client = get_pinterest_client(connection["access_token"])
         boards = client.get_boards()
         
         return {"boards": boards}
@@ -143,11 +153,11 @@ async def create_board(request: CreateBoardRequest):
     Создать новую доску
     """
     try:
-        token_data = get_user_pinterest_token(request.user_id)
-        if not token_data:
+        connection = get_pinterest_connection(request.user_id)
+        if not connection:
             raise HTTPException(status_code=401, detail="Pinterest not connected")
         
-        client = get_pinterest_client(token_data["access_token"])
+        client = get_pinterest_client(connection["access_token"])
         board = client.create_board(
             name=request.name,
             description=request.description or "",
@@ -165,11 +175,11 @@ async def update_board(board_id: str, request: UpdateBoardRequest):
     Обновить доску
     """
     try:
-        token_data = get_user_pinterest_token(request.user_id)
-        if not token_data:
+        connection = get_pinterest_connection(request.user_id)
+        if not connection:
             raise HTTPException(status_code=401, detail="Pinterest not connected")
         
-        client = get_pinterest_client(token_data["access_token"])
+        client = get_pinterest_client(connection["access_token"])
         board = client.update_board(
             board_id=board_id,
             name=request.name,
@@ -188,11 +198,11 @@ async def delete_board(board_id: str, user_id: str):
     Удалить доску
     """
     try:
-        token_data = get_user_pinterest_token(user_id)
-        if not token_data:
+        connection = get_pinterest_connection(user_id)
+        if not connection:
             raise HTTPException(status_code=401, detail="Pinterest not connected")
         
-        client = get_pinterest_client(token_data["access_token"])
+        client = get_pinterest_client(connection["access_token"])
         client.delete_board(board_id)
         
         return {"success": True, "message": "Board deleted successfully"}
@@ -208,13 +218,13 @@ async def publish_now(request: PublishNowRequest):
     Немедленная публикация пина
     """
     try:
-        token_data = get_user_pinterest_token(request.user_id)
-        if not token_data:
+        connection = get_pinterest_connection(request.user_id)
+        if not connection:
             raise HTTPException(status_code=401, detail="Pinterest not connected")
         
-        client = get_pinterest_client(token_data["access_token"])
+        client = get_pinterest_client(connection["access_token"])
         
-        # Создаем пин
+        # Создаем пин с поддержкой keywords
         pin = client.create_pin(
             board_id=request.board_id,
             media_source={
@@ -223,7 +233,8 @@ async def publish_now(request: PublishNowRequest):
             },
             title=request.title,
             description=request.description or "",
-            link=str(request.link) if request.link else ""
+            link=str(request.link) if request.link else "",
+            keywords=request.keywords if hasattr(request, 'keywords') else None
         )
         
         return {
@@ -241,24 +252,28 @@ async def schedule_post(request: SchedulePostRequest):
     Запланировать публикацию пина
     """
     try:
-        token_data = get_user_pinterest_token(request.user_id)
-        if not token_data:
+        connection = get_pinterest_connection(request.user_id)
+        if not connection:
             raise HTTPException(status_code=401, detail="Pinterest not connected")
         
         # Сохраняем запланированный пост в БД
-        post_id = save_scheduled_post(
-            user_id=request.user_id,
-            board_id=request.board_id,
-            image_url=str(request.image_url),
-            title=request.title,
-            description=request.description or "",
-            link=str(request.link) if request.link else "",
-            scheduled_at=request.scheduled_at
-        )
+        post_data = {
+            "user_id": request.user_id,
+            "board_id": request.board_id,
+            "image_url": str(request.image_url),
+            "title": request.title,
+            "description": request.description or "",
+            "link": str(request.link) if request.link else "",
+            "scheduled_at": request.scheduled_at.isoformat(),
+            "status": "scheduled",
+            "created_at": datetime.utcnow().isoformat()
+        }
+        
+        post = create_post(post_data)
         
         return {
             "success": True,
-            "post_id": post_id,
+            "post_id": post["id"] if post else None,
             "scheduled_at": request.scheduled_at
         }
     except Exception as e:
@@ -276,11 +291,11 @@ async def get_account_analytics(
     Получить аналитику аккаунта
     """
     try:
-        token_data = get_user_pinterest_token(user_id)
-        if not token_data:
+        connection = get_pinterest_connection(user_id)
+        if not connection:
             raise HTTPException(status_code=401, detail="Pinterest not connected")
         
-        client = get_pinterest_client(token_data["access_token"])
+        client = get_pinterest_client(connection["access_token"])
         
         # Рассчитываем даты
         end_date = datetime.now()
@@ -315,11 +330,11 @@ async def get_pin_analytics(
     Получить аналитику конкретного пина
     """
     try:
-        token_data = get_user_pinterest_token(user_id)
-        if not token_data:
+        connection = get_pinterest_connection(user_id)
+        if not connection:
             raise HTTPException(status_code=401, detail="Pinterest not connected")
         
-        client = get_pinterest_client(token_data["access_token"])
+        client = get_pinterest_client(connection["access_token"])
         
         # Рассчитываем даты
         end_date = datetime.now()
@@ -351,11 +366,11 @@ async def get_board_analytics(
     Получить аналитику доски
     """
     try:
-        token_data = get_user_pinterest_token(user_id)
-        if not token_data:
+        connection = get_pinterest_connection(user_id)
+        if not connection:
             raise HTTPException(status_code=401, detail="Pinterest not connected")
         
-        client = get_pinterest_client(token_data["access_token"])
+        client = get_pinterest_client(connection["access_token"])
         
         # Рассчитываем даты
         end_date = datetime.now()
