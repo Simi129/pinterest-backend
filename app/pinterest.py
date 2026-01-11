@@ -176,10 +176,11 @@ class PinterestClient:
         title: str,
         description: str = "",
         link: str = "",
-        alt_text: str = ""
+        alt_text: str = "",
+        keywords: Optional[List[str]] = None
     ) -> Dict:
         """
-        Создание нового пина
+        Создание нового пина с поддержкой ключевых слов
         
         Args:
             board_id: ID доски Pinterest
@@ -188,11 +189,18 @@ class PinterestClient:
             description: Описание пина
             link: Ссылка для пина
             alt_text: Альтернативный текст для изображения
+            keywords: Список ключевых слов для пина
             
         Returns:
             Данные созданного пина
         """
         url = f"{self.base_url}/pins"
+        
+        # Если переданы ключевые слова, добавляем их в description как хэштеги
+        final_description = description
+        if keywords and len(keywords) > 0:
+            hashtags = " ".join([f"#{kw.strip().replace(' ', '')}" for kw in keywords])
+            final_description = f"{description}\n\n{hashtags}".strip()
         
         payload = {
             "board_id": board_id,
@@ -200,8 +208,8 @@ class PinterestClient:
             "media_source": media_source
         }
         
-        if description:
-            payload["description"] = description
+        if final_description:
+            payload["description"] = final_description
         
         if link:
             payload["link"] = link
@@ -210,11 +218,17 @@ class PinterestClient:
             payload["alt_text"] = alt_text
         
         try:
+            print(f"📌 Creating pin with title: {title}")
+            if keywords:
+                print(f"🏷️ Keywords: {', '.join(keywords)}")
+            
             response = requests.post(url, json=payload, headers=self.headers)
             response.raise_for_status()
-            return response.json()
+            result = response.json()
+            print(f"✅ Pin created successfully: {result.get('id')}")
+            return result
         except requests.exceptions.RequestException as e:
-            print(f"Error creating pin: {e}")
+            print(f"❌ Error creating pin: {e}")
             if hasattr(e, 'response') and e.response is not None:
                 print(f"Response: {e.response.text}")
             raise
@@ -245,6 +259,126 @@ class PinterestClient:
             return True
         except requests.exceptions.RequestException as e:
             print(f"Error deleting pin: {e}")
+            raise
+    
+    # ==================== Analytics ====================
+    
+    def get_user_analytics(
+        self,
+        start_date: str,
+        end_date: str,
+        metric_types: str = "IMPRESSION,OUTBOUND_CLICK,PIN_CLICK,SAVE"
+    ) -> Dict:
+        """
+        Получить аналитику аккаунта пользователя
+        
+        Args:
+            start_date: Дата начала в формате YYYY-MM-DD
+            end_date: Дата окончания в формате YYYY-MM-DD
+            metric_types: Типы метрик через запятую
+            
+        Returns:
+            Данные аналитики
+        """
+        url = f"{self.base_url}/user_account/analytics"
+        
+        params = {
+            "start_date": start_date,
+            "end_date": end_date,
+            "metric_types": metric_types
+        }
+        
+        try:
+            print(f"📊 Fetching user analytics: {start_date} to {end_date}")
+            response = requests.get(url, headers=self.headers, params=params)
+            response.raise_for_status()
+            data = response.json()
+            print(f"✅ Analytics fetched successfully")
+            return data
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Error fetching user analytics: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                print(f"Response: {e.response.text}")
+            raise
+    
+    def get_pin_analytics(
+        self,
+        pin_id: str,
+        start_date: str,
+        end_date: str,
+        metric_types: str = "IMPRESSION,OUTBOUND_CLICK,PIN_CLICK,SAVE"
+    ) -> Dict:
+        """
+        Получить аналитику конкретного пина
+        
+        Args:
+            pin_id: ID пина
+            start_date: Дата начала в формате YYYY-MM-DD
+            end_date: Дата окончания в формате YYYY-MM-DD
+            metric_types: Типы метрик через запятую
+            
+        Returns:
+            Данные аналитики пина
+        """
+        url = f"{self.base_url}/pins/{pin_id}/analytics"
+        
+        params = {
+            "start_date": start_date,
+            "end_date": end_date,
+            "metric_types": metric_types
+        }
+        
+        try:
+            print(f"📊 Fetching pin analytics for {pin_id}")
+            response = requests.get(url, headers=self.headers, params=params)
+            response.raise_for_status()
+            data = response.json()
+            print(f"✅ Pin analytics fetched successfully")
+            return data
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Error fetching pin analytics: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                print(f"Response: {e.response.text}")
+            raise
+    
+    def get_board_analytics(
+        self,
+        board_id: str,
+        start_date: str,
+        end_date: str,
+        metric_types: str = "IMPRESSION,OUTBOUND_CLICK,PIN_CLICK,SAVE"
+    ) -> Dict:
+        """
+        Получить аналитику доски
+        
+        Args:
+            board_id: ID доски
+            start_date: Дата начала в формате YYYY-MM-DD
+            end_date: Дата окончания в формате YYYY-MM-DD
+            metric_types: Типы метрик через запятую
+            
+        Returns:
+            Данные аналитики доски
+        """
+        url = f"{self.base_url}/boards/{board_id}/analytics"
+        
+        params = {
+            "start_date": start_date,
+            "end_date": end_date,
+            "metric_types": metric_types
+        }
+        
+        try:
+            print(f"📊 Fetching board analytics for {board_id}")
+            response = requests.get(url, headers=self.headers, params=params)
+            response.raise_for_status()
+            data = response.json()
+            print(f"✅ Board analytics fetched successfully")
+            return data
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Error fetching board analytics: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                print(f"Response: {e.response.text}")
             raise
 
 

@@ -1,6 +1,6 @@
 # app/models.py
 from pydantic import BaseModel, HttpUrl
-from typing import Optional
+from typing import Optional, List, Dict
 from datetime import datetime
 
 class PostCreate(BaseModel):
@@ -14,6 +14,7 @@ class PostCreate(BaseModel):
     link: Optional[HttpUrl] = None
     scheduled_at: Optional[datetime] = None
     user_id: str
+    keywords: Optional[List[str]] = None  # Добавили поддержку ключевых слов
 
 class PostResponse(BaseModel):
     """
@@ -35,6 +36,7 @@ class PublishNowRequest(BaseModel):
     description: Optional[str] = ""
     link: Optional[HttpUrl] = None
     user_id: str
+    keywords: Optional[List[str]] = None  # Добавили ключевые слова
 
 class SchedulePostRequest(BaseModel):
     """
@@ -47,6 +49,7 @@ class SchedulePostRequest(BaseModel):
     link: Optional[HttpUrl] = None
     scheduled_at: datetime
     user_id: str
+    keywords: Optional[List[str]] = None  # Добавили ключевые слова
 
 class PinAnalytics(BaseModel):
     """
@@ -57,6 +60,30 @@ class PinAnalytics(BaseModel):
     saves: int
     clicks: int
     date: datetime
+
+class AccountAnalyticsResponse(BaseModel):
+    """
+    Модель ответа аналитики аккаунта
+    """
+    success: bool
+    analytics: Dict
+    period: Dict
+
+class PinAnalyticsResponse(BaseModel):
+    """
+    Модель ответа аналитики пина
+    """
+    success: bool
+    analytics: Dict
+    pin_id: str
+
+class BoardAnalyticsResponse(BaseModel):
+    """
+    Модель ответа аналитики доски
+    """
+    success: bool
+    analytics: Dict
+    board_id: str
 
 class CreateBoardRequest(BaseModel):
     """
