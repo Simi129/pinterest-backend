@@ -89,11 +89,11 @@ async def pinterest_callback(code: str, state: str):
         
         create_pinterest_connection(connection_data)
         
-        return RedirectResponse(url=f"{os.getenv('FRONTEND_URL', 'http://localhost:3000')}/dashboard?pinterest_connected=true")
+        return RedirectResponse(url=f"{os.getenv('FRONTEND_URL')}/dashboard/settings?pinterest_connected=true")
         
     except Exception as e:
         print(f"Error in Pinterest callback: {e}")
-        return RedirectResponse(url=f"{os.getenv('FRONTEND_URL', 'http://localhost:3000')}/dashboard?pinterest_error=true")
+        return RedirectResponse(url=f"{os.getenv('FRONTEND_URL')}/dashboard/settings?pinterest_error={str(e)}")
 
 @app.get("/auth/pinterest/status")
 async def get_pinterest_status(user_id: str):
