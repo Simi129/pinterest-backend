@@ -28,7 +28,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "https://autopin-five.vercel.app",
-        "https://pinflow.org"
+        "https://pinflow.org",
+        "https://www.pinflow.org"
     ],
     allow_credentials=True,
     allow_methods=["*"],
