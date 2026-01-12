@@ -27,8 +27,8 @@ app = FastAPI(title="Pinterest Scheduler API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:3000",
-        "https://yourdomain.com"
+        "https://autopin-five.vercel.app",
+        "https://pinflow.org"
     ],
     allow_credentials=True,
     allow_methods=["*"],
