@@ -35,7 +35,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-REDIRECT_URI = os.getenv("PINTEREST_REDIRECT_URI", "http://localhost:3000/auth/callback")
+REDIRECT_URI = os.getenv("PINTEREST_REDIRECT_URI", "https://autopin-five.vercel.app/auth/callback")
 
 # ==================== OAuth Routes ====================
 
