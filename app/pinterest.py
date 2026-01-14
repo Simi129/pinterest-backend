@@ -278,7 +278,7 @@ class PinterestClient:
             metric_types: Типы метрик через запятую
             
         Returns:
-            Данные аналитики
+            Данные аналитики в формате {all: [...], daily_metrics: [...]}
         """
         url = f"{self.base_url}/user_account/analytics"
         
@@ -293,6 +293,18 @@ class PinterestClient:
             response = requests.get(url, headers=self.headers, params=params)
             response.raise_for_status()
             data = response.json()
+            
+            # Pinterest API возвращает структуру: {"all": {"daily_metrics": [...]}}
+            # Преобразуем в формат, ожидаемый фронтендом: {"all": [...]}
+            if "all" in data and isinstance(data["all"], dict):
+                daily_metrics = data["all"].get("daily_metrics", [])
+                # Возвращаем массив метрик в поле "all"
+                print(f"✅ Analytics fetched successfully, converted {len(daily_metrics)} daily metrics")
+                return {
+                    "all": daily_metrics,
+                    "daily_metrics": daily_metrics
+                }
+            
             print(f"✅ Analytics fetched successfully")
             return data
         except requests.exceptions.RequestException as e:
@@ -333,6 +345,17 @@ class PinterestClient:
             response = requests.get(url, headers=self.headers, params=params)
             response.raise_for_status()
             data = response.json()
+            
+            # Pinterest API возвращает структуру: {"all": {"daily_metrics": [...]}}
+            # Преобразуем в формат, ожидаемый фронтендом: {"all": [...]}
+            if "all" in data and isinstance(data["all"], dict):
+                daily_metrics = data["all"].get("daily_metrics", [])
+                print(f"✅ Pin analytics fetched successfully, converted {len(daily_metrics)} daily metrics")
+                return {
+                    "all": daily_metrics,
+                    "daily_metrics": daily_metrics
+                }
+            
             print(f"✅ Pin analytics fetched successfully")
             return data
         except requests.exceptions.RequestException as e:
@@ -373,6 +396,17 @@ class PinterestClient:
             response = requests.get(url, headers=self.headers, params=params)
             response.raise_for_status()
             data = response.json()
+            
+            # Pinterest API возвращает структуру: {"all": {"daily_metrics": [...]}}
+            # Преобразуем в формат, ожидаемый фронтендом: {"all": [...]}
+            if "all" in data and isinstance(data["all"], dict):
+                daily_metrics = data["all"].get("daily_metrics", [])
+                print(f"✅ Board analytics fetched successfully, converted {len(daily_metrics)} daily metrics")
+                return {
+                    "all": daily_metrics,
+                    "daily_metrics": daily_metrics
+                }
+            
             print(f"✅ Board analytics fetched successfully")
             return data
         except requests.exceptions.RequestException as e:
