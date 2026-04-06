@@ -90,7 +90,7 @@ async def pinterest_callback(code: str, state: str):
         
         create_pinterest_connection(connection_data)
         
-        return RedirectResponse(url=f"{os.getenv('FRONTEND_URL')}/dashboard/settings?pinterest_connected=true")
+        return RedirectResponse(url=f"{os.getenv('FRONTEND_URL')}/pinterest/callback?pinterest_connected=true&user_id={user_id}")
         
     except Exception as e:
         print(f"Error in Pinterest callback: {e}")
