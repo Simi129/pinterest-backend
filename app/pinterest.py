@@ -95,7 +95,6 @@ class PinterestClient:
             print(f"📥 Response status: {response.status_code}")
             print(f"📥 Response headers: {dict(response.headers)}")
             
-            # Проверяем статус код до raise_for_status
             if response.status_code != 201 and response.status_code != 200:
                 print(f"❌ Non-success status code: {response.status_code}")
                 print(f"❌ Response body: {response.text}")
@@ -133,7 +132,6 @@ class PinterestClient:
         url = f"{self.base_url}/boards/{board_id}"
         
         payload = {}
-        
         if name:
             payload["name"] = name
         if description is not None:
@@ -210,10 +208,8 @@ class PinterestClient:
         
         if final_description:
             payload["description"] = final_description
-        
         if link:
             payload["link"] = link
-            
         if alt_text:
             payload["alt_text"] = alt_text
         
@@ -232,7 +228,70 @@ class PinterestClient:
             if hasattr(e, 'response') and e.response is not None:
                 print(f"Response: {e.response.text}")
             raise
-    
+
+    def get_pins(self, page_size: int = 25, bookmark: Optional[str] = None) -> Dict:
+        """
+        Получить список пинов пользователя
+        
+        Args:
+            page_size: Количество пинов на страницу (макс. 100)
+            bookmark: Токен для пагинации (из предыдущего ответа)
+            
+        Returns:
+            {"items": [...], "bookmark": "..."}
+            Каждый пин содержит: id, title, description, link,
+            created_at, media (images), board_id
+        """
+        url = f"{self.base_url}/pins"
+        params = {"page_size": min(page_size, 100)}
+        if bookmark:
+            params["bookmark"] = bookmark
+        
+        try:
+            print(f"📌 Fetching pins (page_size={page_size})")
+            response = requests.get(url, headers=self.headers, params=params)
+            response.raise_for_status()
+            data = response.json()
+            print(f"✅ Fetched {len(data.get('items', []))} pins")
+            return data
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Error fetching pins: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                print(f"Response status: {e.response.status_code}")
+                print(f"Response body: {e.response.text}")
+            raise
+
+    def get_board_pins(self, board_id: str, page_size: int = 25, bookmark: Optional[str] = None) -> Dict:
+        """
+        Получить пины конкретной доски
+        
+        Args:
+            board_id: ID доски
+            page_size: Количество пинов на страницу (макс. 100)
+            bookmark: Токен для пагинации
+            
+        Returns:
+            {"items": [...], "bookmark": "..."}
+        """
+        url = f"{self.base_url}/boards/{board_id}/pins"
+        params = {"page_size": min(page_size, 100)}
+        if bookmark:
+            params["bookmark"] = bookmark
+        
+        try:
+            print(f"📌 Fetching pins for board {board_id} (page_size={page_size})")
+            response = requests.get(url, headers=self.headers, params=params)
+            response.raise_for_status()
+            data = response.json()
+            print(f"✅ Fetched {len(data.get('items', []))} pins for board {board_id}")
+            return data
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Error fetching board pins: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                print(f"Response status: {e.response.status_code}")
+                print(f"Response body: {e.response.text}")
+            raise
+
     def get_pin(self, pin_id: str) -> Dict:
         """
         Получить информацию о пине
@@ -298,7 +357,6 @@ class PinterestClient:
             # Преобразуем в формат, ожидаемый фронтендом: {"all": [...]}
             if "all" in data and isinstance(data["all"], dict):
                 daily_metrics = data["all"].get("daily_metrics", [])
-                # Возвращаем массив метрик в поле "all"
                 print(f"✅ Analytics fetched successfully, converted {len(daily_metrics)} daily metrics")
                 return {
                     "all": daily_metrics,
@@ -346,8 +404,6 @@ class PinterestClient:
             response.raise_for_status()
             data = response.json()
             
-            # Pinterest API возвращает структуру: {"all": {"daily_metrics": [...]}}
-            # Преобразуем в формат, ожидаемый фронтендом: {"all": [...]}
             if "all" in data and isinstance(data["all"], dict):
                 daily_metrics = data["all"].get("daily_metrics", [])
                 print(f"✅ Pin analytics fetched successfully, converted {len(daily_metrics)} daily metrics")
@@ -397,8 +453,6 @@ class PinterestClient:
             response.raise_for_status()
             data = response.json()
             
-            # Pinterest API возвращает структуру: {"all": {"daily_metrics": [...]}}
-            # Преобразуем в формат, ожидаемый фронтендом: {"all": [...]}
             if "all" in data and isinstance(data["all"], dict):
                 daily_metrics = data["all"].get("daily_metrics", [])
                 print(f"✅ Board analytics fetched successfully, converted {len(daily_metrics)} daily metrics")

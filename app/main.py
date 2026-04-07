@@ -9,7 +9,7 @@ from app.models import (
     UpdateBoardRequest
 )
 from app.pinterest import get_pinterest_client
-from app.oauth import get_authorization_url, exchange_code_for_token, refresh_access_token
+from app.oauth import get_authorization_url, exchange_code_for_token
 from app.database import (
     get_pinterest_connection,
     create_pinterest_connection,
@@ -23,7 +23,6 @@ from typing import Optional
 
 app = FastAPI(title="Pinterest Scheduler API")
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -42,14 +41,8 @@ REDIRECT_URI = os.getenv("PINTEREST_REDIRECT_URI", "https://pinterest-backend-1b
 
 @app.get("/auth/pinterest")
 async def pinterest_auth(user_id: str):
-    """
-    Инициирует OAuth процесс для Pinterest
-    """
     try:
-        auth_url = get_authorization_url(
-            redirect_uri=REDIRECT_URI,
-            state=user_id
-        )
+        auth_url = get_authorization_url(redirect_uri=REDIRECT_URI, state=user_id)
         return RedirectResponse(url=auth_url)
     except Exception as e:
         print(f"Error initiating Pinterest OAuth: {e}")
@@ -57,26 +50,17 @@ async def pinterest_auth(user_id: str):
 
 @app.get("/auth/pinterest/callback")
 async def pinterest_callback(code: str, state: str):
-    """
-    Callback для Pinterest OAuth
-    """
     try:
         user_id = state
-        
-        # Обмениваем code на token
         token_data = exchange_code_for_token(code, REDIRECT_URI)
-        
-        # Получаем информацию о пользователе Pinterest
         client = get_pinterest_client(token_data["access_token"])
         user_info = client.get_user_info()
         
-        # Рассчитываем expires_at
         expires_in = token_data.get("expires_in", 0)
         expires_at = None
         if expires_in:
             expires_at = (datetime.utcnow() + timedelta(seconds=expires_in)).isoformat()
         
-        # Сохраняем токен в БД используя create_pinterest_connection
         connection_data = {
             "user_id": user_id,
             "access_token": token_data["access_token"],
@@ -87,53 +71,41 @@ async def pinterest_callback(code: str, state: str):
             "created_at": datetime.utcnow().isoformat(),
             "updated_at": datetime.utcnow().isoformat()
         }
-        
         create_pinterest_connection(connection_data)
-        
         return RedirectResponse(url=f"{os.getenv('FRONTEND_URL')}/pinterest/callback?pinterest_connected=true&user_id={user_id}")
-        
     except Exception as e:
         print(f"Error in Pinterest callback: {e}")
-        return RedirectResponse(url=f"{os.getenv('FRONTEND_URL')}/dashboard/settings?pinterest_error={str(e)}")
+        return RedirectResponse(url=f"{os.getenv('FRONTEND_URL')}/pinterest/callback?pinterest_error={str(e)}")
 
 @app.get("/auth/pinterest/status")
 async def get_pinterest_status(user_id: str):
-    """
-    Проверяет статус подключения Pinterest
-    """
     try:
         connection = get_pinterest_connection(user_id)
-        
         if not connection:
             return {"connected": False}
-        
         return {
             "connected": True,
             "pinterest_username": connection.get("pinterest_username"),
             "pinterest_user_id": connection.get("pinterest_user_id")
         }
     except Exception as e:
-        print(f"Error checking Pinterest status: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/auth/pinterest/disconnect")
 async def disconnect_pinterest(user_id: str):
-    """
-    Отключает Pinterest аккаунт
-    """
     try:
         delete_pinterest_connection(user_id)
         return {"success": True, "message": "Pinterest disconnected successfully"}
     except Exception as e:
-        print(f"Error disconnecting Pinterest: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# ==================== Board Routes ====================
+# ==================== User Profile ====================
 
-@app.get("/api/boards")
-async def get_boards(user_id: str):
+@app.get("/api/user/profile")
+async def get_user_profile(user_id: str):
     """
-    Получить список досок пользователя
+    Получить реальный профиль Pinterest пользователя:
+    username, profile_image, follower_count, pin_count, board_count
     """
     try:
         connection = get_pinterest_connection(user_id)
@@ -141,8 +113,93 @@ async def get_boards(user_id: str):
             raise HTTPException(status_code=401, detail="Pinterest not connected")
         
         client = get_pinterest_client(connection["access_token"])
-        boards = client.get_boards()
+        user_info = client.get_user_info()
         
+        return {
+            "success": True,
+            "profile": {
+                "username": user_info.get("username"),
+                "profile_image": user_info.get("profile_image"),
+                "website_url": user_info.get("website_url"),
+                "follower_count": user_info.get("follower_count", 0),
+                "following_count": user_info.get("following_count", 0),
+                "monthly_views": user_info.get("monthly_views", 0),
+                "pin_count": user_info.get("pin_count", 0),
+                "board_count": user_info.get("board_count", 0),
+            }
+        }
+    except Exception as e:
+        print(f"Error fetching user profile: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==================== Pins Routes ====================
+
+@app.get("/api/pins")
+async def get_pins(
+    user_id: str,
+    page_size: int = Query(default=25, ge=1, le=100),
+    bookmark: Optional[str] = None
+):
+    """
+    Получить реальные пины пользователя.
+    Каждый пин содержит: id, title, description, link, created_at, media (images), board_id
+    """
+    try:
+        connection = get_pinterest_connection(user_id)
+        if not connection:
+            raise HTTPException(status_code=401, detail="Pinterest not connected")
+        
+        client = get_pinterest_client(connection["access_token"])
+        data = client.get_pins(page_size=page_size, bookmark=bookmark)
+        
+        return {
+            "success": True,
+            "pins": data.get("items", []),
+            "bookmark": data.get("bookmark"),  # для пагинации
+            "total": len(data.get("items", []))
+        }
+    except Exception as e:
+        print(f"Error fetching pins: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/boards/{board_id}/pins")
+async def get_board_pins(
+    board_id: str,
+    user_id: str,
+    page_size: int = Query(default=25, ge=1, le=100),
+    bookmark: Optional[str] = None
+):
+    """
+    Получить пины конкретной доски
+    """
+    try:
+        connection = get_pinterest_connection(user_id)
+        if not connection:
+            raise HTTPException(status_code=401, detail="Pinterest not connected")
+        
+        client = get_pinterest_client(connection["access_token"])
+        data = client.get_board_pins(board_id=board_id, page_size=page_size, bookmark=bookmark)
+        
+        return {
+            "success": True,
+            "pins": data.get("items", []),
+            "bookmark": data.get("bookmark"),
+            "board_id": board_id
+        }
+    except Exception as e:
+        print(f"Error fetching board pins: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==================== Board Routes ====================
+
+@app.get("/api/boards")
+async def get_boards(user_id: str):
+    try:
+        connection = get_pinterest_connection(user_id)
+        if not connection:
+            raise HTTPException(status_code=401, detail="Pinterest not connected")
+        client = get_pinterest_client(connection["access_token"])
+        boards = client.get_boards()
         return {"boards": boards}
     except Exception as e:
         print(f"Error fetching boards: {e}")
@@ -150,21 +207,12 @@ async def get_boards(user_id: str):
 
 @app.post("/api/boards/create")
 async def create_board(request: CreateBoardRequest):
-    """
-    Создать новую доску
-    """
     try:
         connection = get_pinterest_connection(request.user_id)
         if not connection:
             raise HTTPException(status_code=401, detail="Pinterest not connected")
-        
         client = get_pinterest_client(connection["access_token"])
-        board = client.create_board(
-            name=request.name,
-            description=request.description or "",
-            privacy=request.privacy or "PUBLIC"
-        )
-        
+        board = client.create_board(name=request.name, description=request.description or "", privacy=request.privacy or "PUBLIC")
         return {"success": True, "board": board}
     except Exception as e:
         print(f"Error creating board: {e}")
@@ -172,22 +220,12 @@ async def create_board(request: CreateBoardRequest):
 
 @app.patch("/api/boards/{board_id}")
 async def update_board(board_id: str, request: UpdateBoardRequest):
-    """
-    Обновить доску
-    """
     try:
         connection = get_pinterest_connection(request.user_id)
         if not connection:
             raise HTTPException(status_code=401, detail="Pinterest not connected")
-        
         client = get_pinterest_client(connection["access_token"])
-        board = client.update_board(
-            board_id=board_id,
-            name=request.name,
-            description=request.description,
-            privacy=request.privacy
-        )
-        
+        board = client.update_board(board_id=board_id, name=request.name, description=request.description, privacy=request.privacy)
         return {"success": True, "board": board}
     except Exception as e:
         print(f"Error updating board: {e}")
@@ -195,17 +233,12 @@ async def update_board(board_id: str, request: UpdateBoardRequest):
 
 @app.delete("/api/boards/{board_id}")
 async def delete_board(board_id: str, user_id: str):
-    """
-    Удалить доску
-    """
     try:
         connection = get_pinterest_connection(user_id)
         if not connection:
             raise HTTPException(status_code=401, detail="Pinterest not connected")
-        
         client = get_pinterest_client(connection["access_token"])
         client.delete_board(board_id)
-        
         return {"success": True, "message": "Board deleted successfully"}
     except Exception as e:
         print(f"Error deleting board: {e}")
@@ -215,49 +248,30 @@ async def delete_board(board_id: str, user_id: str):
 
 @app.post("/api/publish-now")
 async def publish_now(request: PublishNowRequest):
-    """
-    Немедленная публикация пина
-    """
     try:
         connection = get_pinterest_connection(request.user_id)
         if not connection:
             raise HTTPException(status_code=401, detail="Pinterest not connected")
-        
         client = get_pinterest_client(connection["access_token"])
-        
-        # Создаем пин с поддержкой keywords
         pin = client.create_pin(
             board_id=request.board_id,
-            media_source={
-                "source_type": "image_url",
-                "url": str(request.image_url)
-            },
+            media_source={"source_type": "image_url", "url": str(request.image_url)},
             title=request.title,
             description=request.description or "",
             link=str(request.link) if request.link else "",
             keywords=request.keywords if hasattr(request, 'keywords') else None
         )
-        
-        return {
-            "success": True,
-            "pin_id": pin.get("id"),
-            "pin": pin
-        }
+        return {"success": True, "pin_id": pin.get("id"), "pin": pin}
     except Exception as e:
         print(f"Error publishing pin: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/schedule-post")
 async def schedule_post(request: SchedulePostRequest):
-    """
-    Запланировать публикацию пина
-    """
     try:
         connection = get_pinterest_connection(request.user_id)
         if not connection:
             raise HTTPException(status_code=401, detail="Pinterest not connected")
-        
-        # Сохраняем запланированный пост в БД
         post_data = {
             "user_id": request.user_id,
             "board_id": request.board_id,
@@ -269,14 +283,8 @@ async def schedule_post(request: SchedulePostRequest):
             "status": "scheduled",
             "created_at": datetime.utcnow().isoformat()
         }
-        
         post = create_post(post_data)
-        
-        return {
-            "success": True,
-            "post_id": post["id"] if post else None,
-            "scheduled_at": request.scheduled_at
-        }
+        return {"success": True, "post_id": post["id"] if post else None, "scheduled_at": request.scheduled_at}
     except Exception as e:
         print(f"Error scheduling post: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -284,111 +292,60 @@ async def schedule_post(request: SchedulePostRequest):
 # ==================== Analytics Routes ====================
 
 @app.get("/api/analytics/account")
-async def get_account_analytics(
-    user_id: str,
-    days: int = Query(default=30, ge=1, le=365)
-):
-    """
-    Получить аналитику аккаунта
-    """
+async def get_account_analytics(user_id: str, days: int = Query(default=30, ge=1, le=365)):
     try:
         connection = get_pinterest_connection(user_id)
         if not connection:
             raise HTTPException(status_code=401, detail="Pinterest not connected")
-        
         client = get_pinterest_client(connection["access_token"])
-        
-        # Рассчитываем даты
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days)
-        
         analytics = client.get_user_analytics(
             start_date=start_date.strftime("%Y-%m-%d"),
             end_date=end_date.strftime("%Y-%m-%d"),
             metric_types="IMPRESSION,OUTBOUND_CLICK,PIN_CLICK,SAVE"
         )
-        
-        return {
-            "success": True,
-            "analytics": analytics,
-            "period": {
-                "start_date": start_date.strftime("%Y-%m-%d"),
-                "end_date": end_date.strftime("%Y-%m-%d"),
-                "days": days
-            }
-        }
+        return {"success": True, "analytics": analytics, "period": {"start_date": start_date.strftime("%Y-%m-%d"), "end_date": end_date.strftime("%Y-%m-%d"), "days": days}}
     except Exception as e:
         print(f"Error fetching account analytics: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/analytics/pin/{pin_id}")
-async def get_pin_analytics(
-    pin_id: str,
-    user_id: str,
-    days: int = Query(default=30, ge=1, le=365)
-):
-    """
-    Получить аналитику конкретного пина
-    """
+async def get_pin_analytics(pin_id: str, user_id: str, days: int = Query(default=30, ge=1, le=365)):
     try:
         connection = get_pinterest_connection(user_id)
         if not connection:
             raise HTTPException(status_code=401, detail="Pinterest not connected")
-        
         client = get_pinterest_client(connection["access_token"])
-        
-        # Рассчитываем даты
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days)
-        
         analytics = client.get_pin_analytics(
             pin_id=pin_id,
             start_date=start_date.strftime("%Y-%m-%d"),
             end_date=end_date.strftime("%Y-%m-%d"),
             metric_types="IMPRESSION,OUTBOUND_CLICK,PIN_CLICK,SAVE"
         )
-        
-        return {
-            "success": True,
-            "analytics": analytics,
-            "pin_id": pin_id
-        }
+        return {"success": True, "analytics": analytics, "pin_id": pin_id}
     except Exception as e:
         print(f"Error fetching pin analytics: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/analytics/board/{board_id}")
-async def get_board_analytics(
-    board_id: str,
-    user_id: str,
-    days: int = Query(default=30, ge=1, le=365)
-):
-    """
-    Получить аналитику доски
-    """
+async def get_board_analytics(board_id: str, user_id: str, days: int = Query(default=30, ge=1, le=365)):
     try:
         connection = get_pinterest_connection(user_id)
         if not connection:
             raise HTTPException(status_code=401, detail="Pinterest not connected")
-        
         client = get_pinterest_client(connection["access_token"])
-        
-        # Рассчитываем даты
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days)
-        
         analytics = client.get_board_analytics(
             board_id=board_id,
             start_date=start_date.strftime("%Y-%m-%d"),
             end_date=end_date.strftime("%Y-%m-%d"),
             metric_types="IMPRESSION,OUTBOUND_CLICK,PIN_CLICK,SAVE"
         )
-        
-        return {
-            "success": True,
-            "analytics": analytics,
-            "board_id": board_id
-        }
+        return {"success": True, "analytics": analytics, "board_id": board_id}
     except Exception as e:
         print(f"Error fetching board analytics: {e}")
         raise HTTPException(status_code=500, detail=str(e))
